@@ -23,3 +23,17 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS auth_sessions_expires_at_idx ON auth_sessions (expires_at);
+
+CREATE TABLE IF NOT EXISTS official_courses (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    academic_year integer NOT NULL,
+    semester smallint NOT NULL,
+    department text NOT NULL,
+    course_code text NOT NULL,
+    section text NOT NULL,
+    title text NOT NULL,
+    raw_teachers text NOT NULL,
+    raw_time_code text NOT NULL,
+    raw_classrooms text NOT NULL,
+    UNIQUE (academic_year, semester, department, course_code, section)
+);
