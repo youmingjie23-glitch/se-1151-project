@@ -2,12 +2,17 @@ CREATE TABLE IF NOT EXISTS users (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     username varchar(50) NOT NULL UNIQUE,
     password_hash text NOT NULL,
-    role text NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+    role text NOT NULL DEFAULT 'user' CONSTRAINT users_role_check CHECK (role IN ('user', 'teacher', 'admin')),
     status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
     created_at timestamptz NOT NULL DEFAULT now(),
     reviewed_at timestamptz,
     reviewed_by bigint REFERENCES users (id)
 );
+
+-- Replace the original users_role_check on previously initialized databases.
+ALTER TABLE users
+    DROP CONSTRAINT IF EXISTS users_role_check,
+    ADD CONSTRAINT users_role_check CHECK (role IN ('user', 'teacher', 'admin'));
 
 CREATE TABLE IF NOT EXISTS rooms (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

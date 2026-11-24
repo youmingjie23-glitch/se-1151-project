@@ -26,6 +26,9 @@ python -m uvicorn main:app
 | `POST /auth/logout` | 撤銷目前的 token |
 | `GET /admin/users/pending` | 管理員查詢待審核帳號 |
 | `PATCH /admin/users/{user_id}/review` | 管理員送出 `{"status":"approved"}` 或 `{"status":"rejected"}` |
+| `PATCH /admin/users/{user_id}/role` | 管理員送出 `{"role":"teacher"}`，將已核准的一般帳號設為教師 |
 | `GET /rooms` | 已登入使用者查詢教室 |
 
 教室資料可由資料庫維護，例如 `INSERT INTO rooms (code, name, capacity) VALUES ('A101', 'A101 教室', 40);`。
+
+既有資料庫可重新執行 `python -m db init`，更新帳號角色限制並保留原有資料。公開註冊仍建立待審核的 `user` 帳號。
