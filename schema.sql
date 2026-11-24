@@ -37,3 +37,16 @@ CREATE TABLE IF NOT EXISTS official_courses (
     raw_classrooms text NOT NULL,
     UNIQUE (academic_year, semester, department, course_code, section)
 );
+
+CREATE TABLE IF NOT EXISTS course_schedules (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    official_course_id bigint REFERENCES official_courses (id),
+    title text NOT NULL,
+    teacher_id bigint NOT NULL REFERENCES users (id),
+    -- Dates and times use local time in Taiwan (Asia/Taipei).
+    class_date date NOT NULL,
+    start_time time NOT NULL,
+    end_time time NOT NULL,
+    preferred_room_id bigint REFERENCES rooms (id),
+    CHECK (end_time > start_time)
+);
