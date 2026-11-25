@@ -33,9 +33,12 @@ class ScheduleCreate(BaseModel):
         return self
 
 
-class Schedule(ScheduleCreate):
+class AdminScheduleCreate(ScheduleCreate):
+    teacher_id: RecordId
+
+
+class Schedule(AdminScheduleCreate):
     id: int
-    teacher_id: int
 
 
 class AdminSchedule(Schedule):
@@ -109,8 +112,27 @@ def list_my_schedules(teacher: Annotated[Account, Depends(require_teacher)]):
 
 @router.post("/schedules", response_model=Schedule, status_code=201)
 def create_schedule(schedule: ScheduleCreate, teacher: Annotated[Account, Depends(require_teacher)]):
+    return insert_schedule(schedule, teacher.id)
+
+
+@router.post("/admin/schedules", response_model=Schedule, status_code=201)
+def create_admin_schedule(schedule: AdminScheduleCreate, admin: Admin):
+    return insert_schedule(schedule, schedule.teacher_id, validate_teacher=True)
+
+
+def insert_schedule(schedule: ScheduleCreate, teacher_id: int, *, validate_teacher: bool = False):
     try:
         with connect() as db:
+            if validate_teacher:
+                teacher = db.execute(
+                    "SELECT role, status FROM users WHERE id = %s FOR SHARE",
+                    (teacher_id,),
+                ).fetchone()
+                if teacher is None:
+                    raise HTTPException(404, "找不到教師帳號")
+                if teacher["role"] != "teacher" or teacher["status"] != "approved":
+                    raise HTTPException(422, "只能指派給已核准的教師")
+
             return db.execute(
                 """
                 INSERT INTO course_schedules (
@@ -122,7 +144,7 @@ def create_schedule(schedule: ScheduleCreate, teacher: Annotated[Account, Depend
                 """,
                 (
                     schedule.title,
-                    teacher.id,
+                    teacher_id,
                     schedule.class_date,
                     schedule.start_time,
                     schedule.end_time,
