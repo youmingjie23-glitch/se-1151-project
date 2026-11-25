@@ -148,3 +148,17 @@ def update_schedule(
             ).fetchone()
     except ForeignKeyViolation as error:
         raise schedule_reference_error(error) from error
+
+
+@router.delete("/schedules/{schedule_id}", status_code=204)
+def delete_schedule(
+    schedule_id: Annotated[int, Path(gt=0, le=2**63 - 1)],
+    teacher: Annotated[Account, Depends(require_teacher)],
+):
+    with connect() as db:
+        deleted = db.execute(
+            "DELETE FROM course_schedules WHERE id = %s AND teacher_id = %s RETURNING id",
+            (schedule_id, teacher.id),
+        ).fetchone()
+        if deleted is None:
+            raise HTTPException(404, "找不到排課")
