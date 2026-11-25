@@ -3,9 +3,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from auth import router
+from schedules import router as schedules_router
 
 app = FastAPI(title="1151 SE 學期專案")
 app.include_router(router)
+app.include_router(schedules_router)
 
 
 @app.exception_handler(RequestValidationError)
