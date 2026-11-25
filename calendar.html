@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>課程週日曆</title>
+  <style>
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: #f4f6f8; color: #172b35; font: 1rem/1.5 system-ui, sans-serif; }
+    main { max-width: 1440px; margin: auto; padding: clamp(1rem, 4vw, 3rem); }
+    header, .toolbar, nav { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
+    header, .toolbar { justify-content: space-between; }
+    h1 { margin: 0 0 .35rem; font-size: clamp(1.75rem, 4vw, 2.5rem); }
+    h2 { margin: 0; font-size: 1.1rem; }
+    button, input { font: inherit; border-radius: .5rem; padding: .55rem .8rem; }
+    input, button { border: 1px solid #8c9aa1; background: white; color: inherit; }
+    button { cursor: pointer; }
+    button:hover { background: #e9f3f2; }
+    button.primary { background: #17645b; border-color: #17645b; color: white; }
+    button.primary:hover { background: #124f48; }
+    form { background: white; border-radius: .8rem; padding: 1.25rem; max-width: 26rem; }
+    label { display: grid; gap: .35rem; margin: 1rem 0; }
+    .toolbar { margin: 1.15rem 0; }
+    #status, #login-status { color: #455c66; }
+    .calendar { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .55rem; }
+    .day { min-height: 12rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; overflow: hidden; }
+    .day h3 { margin: 0; background: #e7f0f1; padding: .65rem; font-size: .95rem; }
+    .course { background: #eef7f4; border-inline-start: .2rem solid #24786c; border-radius: .35rem; margin: .5rem; padding: .5rem; overflow-wrap: anywhere; }
+    .course p { margin: .2rem 0 0; color: #36515c; font-size: .84rem; }
+    .course strong { display: block; }
+    @media (max-width: 900px) {
+      .calendar { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+      .day { min-height: 7rem; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>課程週日曆</h1>
+    <button id="logout" type="button" hidden>登出</button>
+  </header>
+  <form id="login">
+    <h2>登入</h2>
+    <label>帳號<input name="username" autocomplete="username" required></label>
+    <label>密碼<input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary">登入</button>
+    <p id="login-status" role="status"></p>
+  </form>
+  <section id="week" aria-label="排課週日曆" hidden>
+    <div class="toolbar">
+      <h2 id="range"></h2>
+      <nav aria-label="切換週次">
+        <button id="prev" type="button">上一週</button>
+        <button id="today" type="button">本週</button>
+        <button id="next" type="button">下一週</button>
+      </nav>
+    </div>
+    <p id="status" role="status"></p>
+    <div id="calendar" class="calendar"></div>
+  </section>
+</main>
+<script>
+  const login = document.querySelector("#login");
+  const loginStatus = document.querySelector("#login-status");
+  const logout = document.querySelector("#logout");
+  const week = document.querySelector("#week");
+  const calendar = document.querySelector("#calendar");
+  const range = document.querySelector("#range");
+  const status = document.querySelector("#status");
+  const weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"];
+  let token = null;
+  let monday = currentMonday();
+  let requestNumber = 0;
+
+  function currentMonday() {
+    const parts = new Intl.DateTimeFormat("en", {
+      timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(new Date());
+    const {year, month, day} = Object.fromEntries(parts.map(({type, value}) => [type, value]));
+    const today = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    return addDays(today, -((today.getUTCDay() + 6) % 7));
+  }
+
+  function addDays(date, days) {
+    const result = new Date(date);
+    result.setUTCDate(result.getUTCDate() + days);
+    return result;
+  }
+
+  function isoDate(date) {
+    return date.toISOString().slice(0, 10);
+  }
+
+  function element(tag, text) {
+    const node = document.createElement(tag);
+    node.textContent = text;
+    return node;
+  }
+
+  function renderWeek(start, courses) {
+    calendar.replaceChildren();
+    for (const [offset, weekday] of weekdays.entries()) {
+      const date = isoDate(addDays(start, offset));
+      const column = document.createElement("section");
+      column.className = "day";
+      column.append(element("h3", weekday + " " + date.slice(5)));
+      for (const course of courses.filter(item => item.class_date === date)) {
+        const card = document.createElement("article");
+        card.className = "course";
+        const timeRange = course.start_time.slice(0, 5) + "–" + course.end_time.slice(0, 5);
+        const room = course.preferred_room?.name ?? "未指定";
+        card.append(element("p", timeRange), element("strong", course.title),
+          element("p", "教師：" + course.teacher_username), element("p", "希望教室：" + room));
+        column.append(card);
+      }
+      calendar.append(column);
+    }
+  }
+
+  function showLogin(message = "") {
+    token = null;
+    requestNumber++;
+    login.hidden = false;
+    loginStatus.textContent = message;
+    logout.hidden = true;
+    week.hidden = true;
+    calendar.replaceChildren();
+  }
+
+  async function loadWeek() {
+    const request = ++requestNumber;
+    const start = monday;
+    range.textContent = isoDate(start) + " ～ " + isoDate(addDays(start, 6));
+    renderWeek(start, []);
+    status.textContent = "載入中…";
+    try {
+      const response = await fetch("/schedules/week?week_start=" + isoDate(start), {
+        headers: {Authorization: "Bearer " + token},
+      });
+      if (request !== requestNumber) return;
+      if (response.status === 401) {
+        showLogin("登入已失效，請重新登入。");
+        return;
+      }
+      if (!response.ok) throw new Error("載入排課失敗，請再試一次。");
+      const courses = await response.json();
+      if (request !== requestNumber) return;
+      renderWeek(start, courses);
+      status.textContent = courses.length ? "" : "本週沒有排課";
+    } catch {
+      if (request === requestNumber) status.textContent = "載入排課失敗，請再試一次。";
+    }
+  }
+
+  login.addEventListener("submit", async event => {
+    event.preventDefault();
+    const button = login.querySelector("button");
+    button.disabled = true;
+    loginStatus.textContent = "";
+    try {
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(Object.fromEntries(new FormData(login))),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "登入失敗，請確認帳號與密碼。");
+      token = result.access_token;
+      login.reset();
+      login.hidden = true;
+      logout.hidden = false;
+      week.hidden = false;
+      monday = currentMonday();
+      await loadWeek();
+    } catch (error) {
+      loginStatus.textContent = error instanceof TypeError ? "無法連線，請再試一次。" : error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  logout.addEventListener("click", async () => {
+    const currentToken = token;
+    showLogin();
+    try {
+      const response = await fetch("/auth/logout", {
+        method: "POST", headers: {Authorization: "Bearer " + currentToken},
+      });
+      if (!response.ok && response.status !== 401) throw new Error();
+    } catch {
+      if (!token) loginStatus.textContent = "無法確認伺服器已登出。";
+    }
+  });
+
+  document.querySelector("#prev").onclick = () => { monday = addDays(monday, -7); loadWeek(); };
+  document.querySelector("#today").onclick = () => { monday = currentMonday(); loadWeek(); };
+  document.querySelector("#next").onclick = () => { monday = addDays(monday, 7); loadWeek(); };
+</script>
+</body>
+</html>
