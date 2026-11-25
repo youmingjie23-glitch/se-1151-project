@@ -42,6 +42,21 @@ def require_teacher(account: CurrentUser) -> Account:
     return account
 
 
+@router.get("/schedules/mine", response_model=list[Schedule])
+def list_my_schedules(teacher: Annotated[Account, Depends(require_teacher)]):
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT id, title, teacher_id, class_date, start_time, end_time,
+                   preferred_room_id, official_course_id
+            FROM course_schedules
+            WHERE teacher_id = %s
+            ORDER BY class_date, start_time, id
+            """,
+            (teacher.id,),
+        ).fetchall()
+
+
 @router.post("/schedules", response_model=Schedule, status_code=201)
 def create_schedule(schedule: ScheduleCreate, teacher: Annotated[Account, Depends(require_teacher)]):
     try:
