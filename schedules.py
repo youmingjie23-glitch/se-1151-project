@@ -61,6 +61,10 @@ class SchedulePatch(BaseModel):
     official_course_id: RecordId | None = None
 
 
+class AdminSchedulePatch(SchedulePatch):
+    teacher_id: RecordId | None = None
+
+
 def schedule_reference_error(error: ForeignKeyViolation) -> HTTPException:
     if error.diag.constraint_name == "course_schedules_official_course_id_fkey":
         return HTTPException(404, "找不到官方課程")
@@ -124,14 +128,7 @@ def insert_schedule(schedule: ScheduleCreate, teacher_id: int, *, validate_teach
     try:
         with connect() as db:
             if validate_teacher:
-                teacher = db.execute(
-                    "SELECT role, status FROM users WHERE id = %s FOR SHARE",
-                    (teacher_id,),
-                ).fetchone()
-                if teacher is None:
-                    raise HTTPException(404, "找不到教師帳號")
-                if teacher["role"] != "teacher" or teacher["status"] != "approved":
-                    raise HTTPException(422, "只能指派給已核准的教師")
+                require_assignable_teacher(db, teacher_id)
 
             return db.execute(
                 """
@@ -156,46 +153,75 @@ def insert_schedule(schedule: ScheduleCreate, teacher_id: int, *, validate_teach
         raise schedule_reference_error(error) from error
 
 
+def require_assignable_teacher(db, teacher_id: int):
+    teacher = db.execute(
+        "SELECT role, status FROM users WHERE id = %s FOR SHARE",
+        (teacher_id,),
+    ).fetchone()
+    if teacher is None:
+        raise HTTPException(404, "找不到教師帳號")
+    if teacher["role"] != "teacher" or teacher["status"] != "approved":
+        raise HTTPException(422, "只能指派給已核准的教師")
+
+
 @router.patch("/schedules/{schedule_id}", response_model=Schedule)
 def update_schedule(
     schedule_id: Annotated[int, Path(gt=0, le=2**63 - 1)],
     changes: SchedulePatch,
     teacher: Annotated[Account, Depends(require_teacher)],
 ):
+    return apply_schedule_patch(schedule_id, changes, owner_id=teacher.id)
+
+
+@router.patch("/admin/schedules/{schedule_id}", response_model=Schedule)
+def update_admin_schedule(
+    schedule_id: Annotated[int, Path(gt=0, le=2**63 - 1)],
+    changes: AdminSchedulePatch,
+    admin: Admin,
+):
+    return apply_schedule_patch(schedule_id, changes)
+
+
+def apply_schedule_patch(schedule_id: int, changes: SchedulePatch, *, owner_id: int | None = None):
+    fields = changes.model_dump(exclude_unset=True)
     try:
         with connect() as db:
             row = db.execute(
                 """
-                SELECT title, class_date, start_time, end_time,
+                SELECT title, teacher_id, class_date, start_time, end_time,
                        preferred_room_id, official_course_id
                 FROM course_schedules
-                WHERE id = %s AND teacher_id = %s
+                WHERE id = %s AND teacher_id = COALESCE(%s, teacher_id)
                 FOR UPDATE
                 """,
-                (schedule_id, teacher.id),
+                (schedule_id, owner_id),
             ).fetchone()
             if row is None:
                 raise HTTPException(404, "找不到排課")
 
             try:
-                updated = ScheduleCreate.model_validate(row | changes.model_dump(exclude_unset=True))
+                updated = AdminScheduleCreate.model_validate(row | fields)
             except ValidationError as error:
                 raise RequestValidationError([
                     {**item, "loc": ("body", *item["loc"])} for item in error.errors()
                 ]) from error
+
+            if "teacher_id" in fields:
+                require_assignable_teacher(db, updated.teacher_id)
 
             return db.execute(
                 """
                 UPDATE course_schedules
                 SET title = %(title)s, class_date = %(class_date)s,
                     start_time = %(start_time)s, end_time = %(end_time)s,
+                    teacher_id = %(teacher_id)s,
                     preferred_room_id = %(preferred_room_id)s,
                     official_course_id = %(official_course_id)s
-                WHERE id = %(id)s AND teacher_id = %(teacher_id)s
+                WHERE id = %(id)s AND teacher_id = COALESCE(%(owner_id)s, teacher_id)
                 RETURNING id, title, teacher_id, class_date, start_time, end_time,
                           preferred_room_id, official_course_id
                 """,
-                {**updated.model_dump(), "id": schedule_id, "teacher_id": teacher.id},
+                {**updated.model_dump(), "id": schedule_id, "owner_id": owner_id},
             ).fetchone()
     except ForeignKeyViolation as error:
         raise schedule_reference_error(error) from error
