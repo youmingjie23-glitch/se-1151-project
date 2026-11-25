@@ -1,21 +1,23 @@
 from datetime import date, time
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi.exceptions import RequestValidationError
 from psycopg.errors import ForeignKeyViolation
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
 from auth import Account, CurrentUser
 from db import connect
 
 router = APIRouter()
 RecordId = Annotated[int, Field(gt=0, le=2**63 - 1)]
+Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class ScheduleCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    title: Title
     class_date: date
     start_time: time
     end_time: time
@@ -34,6 +36,25 @@ class ScheduleCreate(BaseModel):
 class Schedule(ScheduleCreate):
     id: int
     teacher_id: int
+
+
+class SchedulePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: Title | None = None
+    class_date: date | None = None
+    start_time: time | None = None
+    end_time: time | None = None
+    preferred_room_id: RecordId | None = None
+    official_course_id: RecordId | None = None
+
+
+def schedule_reference_error(error: ForeignKeyViolation) -> HTTPException:
+    if error.diag.constraint_name == "course_schedules_official_course_id_fkey":
+        return HTTPException(404, "找不到官方課程")
+    if error.diag.constraint_name == "course_schedules_preferred_room_id_fkey":
+        return HTTPException(404, "找不到教室")
+    raise error
 
 
 def require_teacher(account: CurrentUser) -> Account:
@@ -81,8 +102,49 @@ def create_schedule(schedule: ScheduleCreate, teacher: Annotated[Account, Depend
                 ),
             ).fetchone()
     except ForeignKeyViolation as error:
-        if error.diag.constraint_name == "course_schedules_official_course_id_fkey":
-            raise HTTPException(404, "找不到官方課程") from error
-        if error.diag.constraint_name == "course_schedules_preferred_room_id_fkey":
-            raise HTTPException(404, "找不到教室") from error
-        raise
+        raise schedule_reference_error(error) from error
+
+
+@router.patch("/schedules/{schedule_id}", response_model=Schedule)
+def update_schedule(
+    schedule_id: Annotated[int, Path(gt=0, le=2**63 - 1)],
+    changes: SchedulePatch,
+    teacher: Annotated[Account, Depends(require_teacher)],
+):
+    try:
+        with connect() as db:
+            row = db.execute(
+                """
+                SELECT title, class_date, start_time, end_time,
+                       preferred_room_id, official_course_id
+                FROM course_schedules
+                WHERE id = %s AND teacher_id = %s
+                FOR UPDATE
+                """,
+                (schedule_id, teacher.id),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(404, "找不到排課")
+
+            try:
+                updated = ScheduleCreate.model_validate(row | changes.model_dump(exclude_unset=True))
+            except ValidationError as error:
+                raise RequestValidationError([
+                    {**item, "loc": ("body", *item["loc"])} for item in error.errors()
+                ]) from error
+
+            return db.execute(
+                """
+                UPDATE course_schedules
+                SET title = %(title)s, class_date = %(class_date)s,
+                    start_time = %(start_time)s, end_time = %(end_time)s,
+                    preferred_room_id = %(preferred_room_id)s,
+                    official_course_id = %(official_course_id)s
+                WHERE id = %(id)s AND teacher_id = %(teacher_id)s
+                RETURNING id, title, teacher_id, class_date, start_time, end_time,
+                          preferred_room_id, official_course_id
+                """,
+                {**updated.model_dump(), "id": schedule_id, "teacher_id": teacher.id},
+            ).fetchone()
+    except ForeignKeyViolation as error:
+        raise schedule_reference_error(error) from error
