@@ -1,7 +1,7 @@
 from datetime import date, time
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from fastapi.exceptions import RequestValidationError
 from psycopg.errors import ForeignKeyViolation
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
@@ -62,6 +62,22 @@ class ScheduleConflict(BaseModel):
     first: ConflictSchedule
     second: ConflictSchedule
     reasons: list[Literal["teacher", "preferred_room"]]
+
+
+class WeekRoom(BaseModel):
+    id: int
+    code: str
+    name: str
+
+
+class WeekSchedule(BaseModel):
+    id: int
+    title: str
+    teacher_username: str
+    class_date: date
+    start_time: time
+    end_time: time
+    preferred_room: WeekRoom | None
 
 
 class SchedulePatch(BaseModel):
@@ -137,6 +153,36 @@ def list_schedule_conflicts(admin: Admin):
                AND (a.teacher_id = b.teacher_id OR a.preferred_room_id = b.preferred_room_id)
             ORDER BY a.class_date, a.id, b.id
             """
+        ).fetchall()
+
+
+@router.get("/schedules/week", response_model=list[WeekSchedule])
+def list_week_schedules(
+    account: CurrentUser,
+    week_start: Annotated[str, Query(pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")],
+):
+    try:
+        monday = date.fromisoformat(week_start)
+    except ValueError as error:
+        raise HTTPException(422, "week_start 必須是有效日期") from error
+    if monday.weekday() != 0:
+        raise HTTPException(422, "week_start 必須是星期一")
+
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT s.id, s.title, u.username AS teacher_username,
+                   s.class_date, s.start_time, s.end_time,
+                   CASE WHEN r.id IS NOT NULL THEN
+                       json_build_object('id', r.id, 'code', r.code, 'name', r.name)
+                   END AS preferred_room
+            FROM course_schedules AS s
+            JOIN users AS u ON u.id = s.teacher_id
+            LEFT JOIN rooms AS r ON r.id = s.preferred_room_id
+            WHERE s.class_date >= %s AND s.class_date < %s::date + 7
+            ORDER BY s.class_date, s.start_time, s.id
+            """,
+            (monday, monday),
         ).fetchall()
 
 
