@@ -29,6 +29,11 @@
     .course { background: #eef7f4; border-inline-start: .2rem solid #24786c; border-radius: .35rem; margin: .5rem; padding: .5rem; overflow-wrap: anywhere; }
     .course p { margin: .2rem 0 0; color: #36515c; font-size: .84rem; }
     .course strong { display: block; }
+    .course[draggable="true"] { cursor: grab; }
+    .slots { max-height: 15rem; overflow: auto; margin: .5rem; }
+    .slot { padding: .25rem .5rem; border-top: 1px dashed #bacbd0; font-size: .84rem; color: #36515c; }
+    .slot.active { background: #d3ede7; outline: 1px solid #17645b; outline-offset: -1px; }
+    #move-status { color: #8b3228; }
     @media (max-width: 900px) {
       .calendar { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
       .day { min-height: 7rem; }
@@ -58,6 +63,8 @@
       </nav>
     </div>
     <p id="status" role="status"></p>
+    <p id="move-help" hidden>將課程拖到想改期的日期和時間格（每 30 分鐘一格）。</p>
+    <p id="move-status" role="status"></p>
     <div id="calendar" class="calendar"></div>
   </section>
 </main>
@@ -69,10 +76,15 @@
   const calendar = document.querySelector("#calendar");
   const range = document.querySelector("#range");
   const status = document.querySelector("#status");
+  const moveHelp = document.querySelector("#move-help");
+  const moveStatus = document.querySelector("#move-status");
   const weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"];
   let token = null;
   let monday = currentMonday();
   let requestNumber = 0;
+  let isAdmin = false;
+  let draggedCourse = null;
+  let savingMove = false;
 
   function currentMonday() {
     const parts = new Intl.DateTimeFormat("en", {
@@ -109,18 +121,108 @@
       for (const course of courses.filter(item => item.class_date === date)) {
         const card = document.createElement("article");
         card.className = "course";
+        if (isAdmin) {
+          card.draggable = true;
+          card.addEventListener("dragstart", event => {
+            if (savingMove) {
+              event.preventDefault();
+              return;
+            }
+            draggedCourse = course;
+            event.dataTransfer.setData("text/plain", String(course.id));
+            event.dataTransfer.effectAllowed = "move";
+          });
+          card.addEventListener("dragend", () => { draggedCourse = null; });
+        }
         const timeRange = course.start_time.slice(0, 5) + "–" + course.end_time.slice(0, 5);
         const room = course.preferred_room?.name ?? "未指定";
         card.append(element("p", timeRange), element("strong", course.title),
           element("p", "教師：" + course.teacher_username), element("p", "希望教室：" + room));
         column.append(card);
       }
+      if (isAdmin) column.append(renderSlots(date));
       calendar.append(column);
+    }
+  }
+
+  function renderSlots(date) {
+    const slots = document.createElement("div");
+    slots.className = "slots";
+    for (let minute = 0; minute < 24 * 60; minute += 30) {
+      const start = formatTime(minute * 60_000_000);
+      const slot = element("div", start.slice(0, 5));
+      slot.className = "slot";
+      slot.addEventListener("dragover", event => {
+        if (!draggedCourse || savingMove) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        slot.classList.add("active");
+      });
+      slot.addEventListener("dragleave", () => slot.classList.remove("active"));
+      slot.addEventListener("drop", event => {
+        slot.classList.remove("active");
+        if (!draggedCourse || savingMove) return;
+        event.preventDefault();
+        const course = draggedCourse;
+        draggedCourse = null;
+        saveMove(course, date, start);
+      });
+      slots.append(slot);
+    }
+    return slots;
+  }
+
+  function timeInMicroseconds(value) {
+    const [hours, minutes, seconds = "0"] = value.split(":");
+    return (Number(hours) * 3600 + Number(minutes) * 60) * 1_000_000
+      + Math.round(Number(seconds) * 1_000_000);
+  }
+
+  function formatTime(microseconds) {
+    const seconds = Math.floor(microseconds / 1_000_000);
+    const parts = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60];
+    const fraction = microseconds % 1_000_000;
+    return parts.map(part => String(part).padStart(2, "0")).join(":")
+      + (fraction ? "." + String(fraction).padStart(6, "0") : "");
+  }
+
+  async function saveMove(course, date, start) {
+    moveStatus.textContent = "";
+    const duration = timeInMicroseconds(course.end_time) - timeInMicroseconds(course.start_time);
+    const end = timeInMicroseconds(start) + duration;
+    if (end >= 24 * 3600 * 1_000_000) {
+      moveStatus.textContent = "改期失敗：結束時間必須在同一天。";
+      return;
+    }
+    const currentToken = token;
+    savingMove = true;
+    try {
+      const response = await fetch("/admin/schedules/" + course.id, {
+        method: "PATCH",
+        headers: {Authorization: "Bearer " + currentToken, "Content-Type": "application/json"},
+        body: JSON.stringify({class_date: date, start_time: start, end_time: formatTime(end)}),
+      });
+      if (token !== currentToken) return;
+      if (response.status === 401) {
+        showLogin("登入已失效，請重新登入。");
+      } else if (response.ok) {
+        await loadWeek();
+      } else {
+        moveStatus.textContent = "改期失敗，課程保留在原時段。";
+      }
+    } catch {
+      if (token === currentToken) moveStatus.textContent = "改期失敗，請確認連線後重試。";
+    } finally {
+      savingMove = false;
     }
   }
 
   function showLogin(message = "") {
     token = null;
+    isAdmin = false;
+    draggedCourse = null;
+    moveHelp.hidden = true;
+    moveStatus.textContent = "";
     requestNumber++;
     login.hidden = false;
     loginStatus.textContent = message;
@@ -132,6 +234,8 @@
   async function loadWeek() {
     const request = ++requestNumber;
     const start = monday;
+    draggedCourse = null;
+    moveStatus.textContent = "";
     range.textContent = isoDate(start) + " ～ " + isoDate(addDays(start, 6));
     renderWeek(start, []);
     status.textContent = "載入中…";
@@ -167,6 +271,10 @@
       });
       const result = await response.json();
       if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "登入失敗，請確認帳號與密碼。");
+      const profile = await fetch("/auth/me", {headers: {Authorization: "Bearer " + result.access_token}});
+      if (!profile.ok) throw new Error("無法取得帳號資料，請重新登入。");
+      isAdmin = (await profile.json()).role === "admin";
+      moveHelp.hidden = !isAdmin;
       token = result.access_token;
       login.reset();
       login.hidden = true;
