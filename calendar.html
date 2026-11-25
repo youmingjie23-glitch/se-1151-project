@@ -38,6 +38,11 @@
     .course .conflict-badge { color: #8b3228; font-weight: 700; }
     .conflicts { margin-top: 1.25rem; padding: 1rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; }
     .conflicts li + li { margin-top: .45rem; }
+    .mine { margin: 1.25rem 0; padding: 1rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; }
+    .mine form { padding: 0; }
+    .mine li + li { margin-top: .75rem; }
+    .mine li button { margin: .3rem .5rem 0 0; }
+    select { font: inherit; padding: .55rem .8rem; }
     @media (max-width: 900px) {
       .calendar { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
       .day { min-height: 7rem; }
@@ -57,6 +62,24 @@
     <button class="primary">登入</button>
     <p id="login-status" role="status"></p>
   </form>
+  <section id="mine" class="mine" aria-labelledby="mine-heading" hidden>
+    <h2 id="mine-heading">我的排課</h2>
+    <p id="mine-status" role="status"></p>
+    <p id="room-status" role="status"></p>
+    <ul id="mine-list"></ul>
+    <button id="mine-add" type="button" class="primary">新增排課</button>
+    <form id="mine-form" hidden>
+      <h3 id="mine-form-heading"></h3>
+      <label>課名<input name="title" required></label>
+      <label>日期<input name="class_date" type="date" required></label>
+      <label>開始時間<input name="start_time" required placeholder="09:00"></label>
+      <label>結束時間<input name="end_time" required placeholder="10:00"></label>
+      <label>希望教室<select name="preferred_room_id"></select></label>
+      <label>官方課程 ID（選填）<input name="official_course_id" inputmode="numeric" pattern="[1-9][0-9]*"></label>
+      <button class="primary" type="submit">儲存</button>
+      <button id="mine-cancel" type="button">取消</button>
+    </form>
+  </section>
   <section id="week" aria-label="排課週日曆" hidden>
     <div class="toolbar">
       <h2 id="range"></h2>
@@ -90,6 +113,13 @@
   const conflictsPanel = document.querySelector("#conflicts");
   const conflictStatus = document.querySelector("#conflict-status");
   const conflictList = document.querySelector("#conflict-list");
+  const mine = document.querySelector("#mine");
+  const mineStatus = document.querySelector("#mine-status");
+  const mineList = document.querySelector("#mine-list");
+  const mineForm = document.querySelector("#mine-form");
+  const mineAdd = document.querySelector("#mine-add");
+  const roomStatus = document.querySelector("#room-status");
+  const roomSelect = mineForm.elements.preferred_room_id;
   const conflictLabels = {
     teacher: "教師時段重疊",
     preferred_room: "希望教室時段重疊",
@@ -99,6 +129,9 @@
   let monday = currentMonday();
   let requestNumber = 0;
   let isAdmin = false;
+  let editingSchedule = null;
+  let teacherRooms = new Map();
+  let savingMine = false;
   let draggedCourse = null;
   let savingMove = false;
 
@@ -126,6 +159,100 @@
     node.textContent = text;
     return node;
   }
+
+  async function teacherRequest(path, session, options = {}) {
+    const response = await fetch(path, {
+      ...options,
+      headers: {Authorization: "Bearer " + session, "Content-Type": "application/json"},
+    });
+    if (response.status === 401 && token === session) showLogin("登入已失效，請重新登入。");
+    if (!response.ok) {
+      const {detail} = await response.json().catch(() => ({}));
+      throw new Error(typeof detail === "string" ? detail : detail?.[0]?.msg || "操作失敗，請再試一次。");
+    }
+    return response.status === 204 ? null : response.json();
+  }
+
+  async function loadMine() {
+    const session = token;
+    mineStatus.textContent = "載入中…";
+    try {
+      const courses = await teacherRequest("/schedules/mine", session);
+      if (token !== session) return;
+      mineList.replaceChildren();
+      for (const course of courses) {
+        const item = document.createElement("li");
+        const time = course.start_time.slice(0, 5) + "–" + course.end_time.slice(0, 5);
+        const room = course.preferred_room_id === null ? "未指定" :
+          teacherRooms.get(course.preferred_room_id) ?? "教室 ID " + course.preferred_room_id;
+        item.append(element("strong", course.title),
+          element("div", course.class_date + " " + time + "｜希望教室：" + room));
+        const edit = element("button", "編輯");
+        edit.onclick = () => openMineForm(course);
+        const remove = element("button", "刪除");
+        remove.onclick = () => {
+          if (!savingMine && window.confirm("確定刪除「" + course.title + "」？")) {
+            saveMine("/schedules/" + course.id, {method: "DELETE"});
+          }
+        };
+        item.append(edit, remove);
+        mineList.append(item);
+      }
+      mineStatus.textContent = courses.length ? "" : "你目前沒有排課";
+    } catch {
+      if (token === session) mineStatus.textContent = "無法載入我的排課，請重新登入後再試。";
+    }
+  }
+
+  function openMineForm(course = null) {
+    if (savingMine) return;
+    editingSchedule = course?.id ?? null;
+    mineForm.reset();
+    for (const field of ["title", "class_date", "start_time", "end_time", "official_course_id"]) {
+      mineForm.elements[field].value = course?.[field] ?? "";
+    }
+    roomSelect.replaceChildren(new Option("未指定", ""));
+    for (const [id, name] of teacherRooms) roomSelect.add(new Option(name, id));
+    const roomId = course?.preferred_room_id;
+    if (roomId != null && !teacherRooms.has(roomId)) roomSelect.add(new Option("教室 ID " + roomId, roomId));
+    roomSelect.value = roomId ?? "";
+    document.querySelector("#mine-form-heading").textContent = course ? "編輯排課" : "新增排課";
+    mineStatus.textContent = "";
+    mineForm.hidden = false;
+    mineForm.elements.title.focus();
+  }
+
+  async function saveMine(path, options) {
+    if (savingMine) return;
+    const session = token;
+    savingMine = true;
+    const submit = mineForm.querySelector('[type="submit"]');
+    submit.disabled = true;
+    mineStatus.textContent = "儲存中…";
+    try {
+      await teacherRequest(path, session, options);
+      if (token !== session) return;
+      if (options.method !== "DELETE" || path === "/schedules/" + editingSchedule) mineForm.hidden = true;
+      await Promise.all([loadMine(), loadWeek()]);
+    } catch (error) {
+      if (token === session) mineStatus.textContent = error.message;
+    } finally {
+      savingMine = false;
+      submit.disabled = false;
+    }
+  }
+
+  mineAdd.onclick = () => openMineForm();
+  document.querySelector("#mine-cancel").onclick = () => {
+    if (!savingMine) mineForm.hidden = true;
+  };
+  mineForm.addEventListener("submit", event => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(mineForm));
+    for (const field of ["preferred_room_id", "official_course_id"]) data[field] = data[field] || null;
+    saveMine(editingSchedule === null ? "/schedules" : "/schedules/" + editingSchedule,
+      {method: editingSchedule === null ? "POST" : "PATCH", body: JSON.stringify(data)});
+  });
 
   function renderWeek(start, courses) {
     calendar.replaceChildren();
@@ -268,6 +395,13 @@
   function showLogin(message = "") {
     token = null;
     isAdmin = false;
+    teacherRooms.clear();
+    mine.hidden = true;
+    mineForm.hidden = true;
+    mineForm.reset();
+    mineList.replaceChildren();
+    mineStatus.textContent = "";
+    roomStatus.textContent = "";
     draggedCourse = null;
     moveHelp.hidden = true;
     moveStatus.textContent = "";
@@ -331,7 +465,8 @@
       if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "登入失敗，請確認帳號與密碼。");
       const profile = await fetch("/auth/me", {headers: {Authorization: "Bearer " + result.access_token}});
       if (!profile.ok) throw new Error("無法取得帳號資料，請重新登入。");
-      isAdmin = (await profile.json()).role === "admin";
+      const {role} = await profile.json();
+      isAdmin = role === "admin";
       moveHelp.hidden = !isAdmin;
       token = result.access_token;
       login.reset();
@@ -339,7 +474,23 @@
       logout.hidden = false;
       week.hidden = false;
       monday = currentMonday();
-      await loadWeek();
+      const loadingWeek = loadWeek();
+      if (role === "teacher") {
+        const session = token;
+        mine.hidden = false;
+        mineAdd.disabled = true;
+        try {
+          const rooms = await teacherRequest("/rooms", session);
+          if (token === session) teacherRooms = new Map(rooms.map(room => [room.id, room.name]));
+        } catch {
+          if (token === session) roomStatus.textContent = "無法載入教室選項。";
+        }
+        if (token === session) {
+          mineAdd.disabled = false;
+          await loadMine();
+        }
+      }
+      await loadingWeek;
     } catch (error) {
       loginStatus.textContent = error instanceof TypeError ? "無法連線，請再試一次。" : error.message;
     } finally {
