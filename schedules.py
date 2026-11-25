@@ -1,5 +1,5 @@
 from datetime import date, time
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from fastapi.exceptions import RequestValidationError
@@ -50,6 +50,20 @@ class AdminSchedule(Schedule):
     official_course_title: str | None
 
 
+class ConflictSchedule(BaseModel):
+    id: int
+    title: str
+    class_date: date
+    start_time: time
+    end_time: time
+
+
+class ScheduleConflict(BaseModel):
+    first: ConflictSchedule
+    second: ConflictSchedule
+    reasons: list[Literal["teacher", "preferred_room"]]
+
+
 class SchedulePatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -95,6 +109,33 @@ def list_admin_schedules(admin: Admin):
             LEFT JOIN rooms AS r ON r.id = s.preferred_room_id
             LEFT JOIN official_courses AS c ON c.id = s.official_course_id
             ORDER BY s.class_date, s.start_time, s.id
+            """
+        ).fetchall()
+
+
+@router.get("/admin/schedules/conflicts", response_model=list[ScheduleConflict])
+def list_schedule_conflicts(admin: Admin):
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT json_build_object(
+                       'id', a.id, 'title', a.title, 'class_date', a.class_date,
+                       'start_time', a.start_time, 'end_time', a.end_time
+                   ) AS first,
+                   json_build_object(
+                       'id', b.id, 'title', b.title, 'class_date', b.class_date,
+                       'start_time', b.start_time, 'end_time', b.end_time
+                   ) AS second,
+                   array_remove(ARRAY[
+                       CASE WHEN a.teacher_id = b.teacher_id THEN 'teacher' END,
+                       CASE WHEN a.preferred_room_id = b.preferred_room_id THEN 'preferred_room' END
+                   ], NULL) AS reasons
+            FROM course_schedules AS a
+            JOIN course_schedules AS b
+                ON a.id < b.id AND a.class_date = b.class_date
+               AND a.start_time < b.end_time AND b.start_time < a.end_time
+               AND (a.teacher_id = b.teacher_id OR a.preferred_room_id = b.preferred_room_id)
+            ORDER BY a.class_date, a.id, b.id
             """
         ).fetchall()
 
