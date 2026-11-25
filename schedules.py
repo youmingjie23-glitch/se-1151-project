@@ -239,3 +239,17 @@ def delete_schedule(
         ).fetchone()
         if deleted is None:
             raise HTTPException(404, "找不到排課")
+
+
+@router.delete("/admin/schedules/{schedule_id}", status_code=204)
+def delete_admin_schedule(
+    schedule_id: Annotated[int, Path(gt=0, le=2**63 - 1)],
+    admin: Admin,
+):
+    with connect() as db:
+        deleted = db.execute(
+            "DELETE FROM course_schedules WHERE id = %s RETURNING id",
+            (schedule_id,),
+        ).fetchone()
+        if deleted is None:
+            raise HTTPException(404, "找不到排課")
