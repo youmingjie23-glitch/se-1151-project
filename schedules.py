@@ -70,6 +70,13 @@ class WeekRoom(BaseModel):
     name: str
 
 
+class OfficialCourseOption(BaseModel):
+    id: int
+    course_code: str
+    section: str
+    title: str
+
+
 class WeekSchedule(BaseModel):
     id: int
     title: str
@@ -153,6 +160,22 @@ def list_schedule_conflicts(admin: Admin):
                AND (a.teacher_id = b.teacher_id OR a.preferred_room_id = b.preferred_room_id)
             ORDER BY a.class_date, a.id, b.id
             """
+        ).fetchall()
+
+
+@router.get("/official-courses", response_model=list[OfficialCourseOption])
+def list_official_courses(account: CurrentUser):
+    if account.role not in {"teacher", "admin"}:
+        raise HTTPException(403, "需要教師或管理員權限")
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT id, course_code, section, title
+            FROM official_courses
+            WHERE academic_year = %s AND semester = %s AND department = %s
+            ORDER BY course_code, section
+            """,
+            (115, 1, "資管系"),
         ).fetchall()
 
 

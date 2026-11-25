@@ -66,6 +66,7 @@
     <h2 id="mine-heading">我的排課</h2>
     <p id="mine-status" role="status"></p>
     <p id="room-status" role="status"></p>
+    <p id="official-course-status" role="status"></p>
     <ul id="mine-list"></ul>
     <button id="mine-add" type="button" class="primary">新增排課</button>
     <form id="mine-form" hidden>
@@ -75,7 +76,8 @@
       <label>開始時間<input name="start_time" required placeholder="09:00"></label>
       <label>結束時間<input name="end_time" required placeholder="10:00"></label>
       <label>希望教室<select name="preferred_room_id"></select></label>
-      <label>官方課程 ID（選填）<input name="official_course_id" inputmode="numeric" pattern="[1-9][0-9]*"></label>
+      <label>官方課程（選填）<select name="official_course_id" aria-describedby="official-course-note"></select></label>
+      <p id="official-course-note" role="status"></p>
       <button class="primary" type="submit">儲存</button>
       <button id="mine-cancel" type="button">取消</button>
     </form>
@@ -120,6 +122,9 @@
   const mineAdd = document.querySelector("#mine-add");
   const roomStatus = document.querySelector("#room-status");
   const roomSelect = mineForm.elements.preferred_room_id;
+  const officialCourseSelect = mineForm.elements.official_course_id;
+  const officialCourseStatus = document.querySelector("#official-course-status");
+  const officialCourseNote = document.querySelector("#official-course-note");
   const conflictLabels = {
     teacher: "教師時段重疊",
     preferred_room: "希望教室時段重疊",
@@ -131,6 +136,7 @@
   let isAdmin = false;
   let editingSchedule = null;
   let teacherRooms = new Map();
+  let officialCourses = [];
   let savingMine = false;
   let draggedCourse = null;
   let savingMove = false;
@@ -208,7 +214,7 @@
     if (savingMine) return;
     editingSchedule = course?.id ?? null;
     mineForm.reset();
-    for (const field of ["title", "class_date", "start_time", "end_time", "official_course_id"]) {
+    for (const field of ["title", "class_date", "start_time", "end_time"]) {
       mineForm.elements[field].value = course?.[field] ?? "";
     }
     roomSelect.replaceChildren(new Option("未指定", ""));
@@ -216,6 +222,19 @@
     const roomId = course?.preferred_room_id;
     if (roomId != null && !teacherRooms.has(roomId)) roomSelect.add(new Option("教室 ID " + roomId, roomId));
     roomSelect.value = roomId ?? "";
+    officialCourseSelect.replaceChildren(new Option("不關聯官方課程", ""));
+    for (const {id, course_code, section, title} of officialCourses) {
+      officialCourseSelect.add(new Option(`${course_code}｜班別 ${section}｜${title}`, id));
+    }
+    const officialId = course?.official_course_id;
+    const missingOfficialOption = officialId != null && !officialCourses.some(({id}) => id === officialId);
+    if (missingOfficialOption) {
+      officialCourseSelect.add(new Option("保留原關聯（ID " + officialId + "）", officialId));
+    }
+    officialCourseSelect.value = officialId ?? "";
+    officialCourseNote.textContent = missingOfficialOption
+      ? "原關聯不在目前的選項中，儲存時會保留，除非你改選其他選項。"
+      : "";
     document.querySelector("#mine-form-heading").textContent = course ? "編輯排課" : "新增排課";
     mineStatus.textContent = "";
     mineForm.hidden = false;
@@ -396,12 +415,15 @@
     token = null;
     isAdmin = false;
     teacherRooms.clear();
+    officialCourses = [];
     mine.hidden = true;
     mineForm.hidden = true;
     mineForm.reset();
     mineList.replaceChildren();
     mineStatus.textContent = "";
     roomStatus.textContent = "";
+    officialCourseStatus.textContent = "";
+    officialCourseNote.textContent = "";
     draggedCourse = null;
     moveHelp.hidden = true;
     moveStatus.textContent = "";
@@ -479,13 +501,21 @@
         const session = token;
         mine.hidden = false;
         mineAdd.disabled = true;
-        try {
-          const rooms = await teacherRequest("/rooms", session);
-          if (token === session) teacherRooms = new Map(rooms.map(room => [room.id, room.name]));
-        } catch {
-          if (token === session) roomStatus.textContent = "無法載入教室選項。";
-        }
+        const [rooms, courses] = await Promise.allSettled([
+          teacherRequest("/rooms", session),
+          teacherRequest("/official-courses", session),
+        ]);
         if (token === session) {
+          if (rooms.status === "fulfilled") {
+            teacherRooms = new Map(rooms.value.map(room => [room.id, room.name]));
+          } else {
+            roomStatus.textContent = "無法載入教室選項。";
+          }
+          if (courses.status === "fulfilled") {
+            officialCourses = courses.value;
+          } else {
+            officialCourseStatus.textContent = "無法載入官方課程選項，編輯時仍可保留原關聯。";
+          }
           mineAdd.disabled = false;
           await loadMine();
         }
