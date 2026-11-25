@@ -34,6 +34,10 @@
     .slot { padding: .25rem .5rem; border-top: 1px dashed #bacbd0; font-size: .84rem; color: #36515c; }
     .slot.active { background: #d3ede7; outline: 1px solid #17645b; outline-offset: -1px; }
     #move-status { color: #8b3228; }
+    .course.conflicted { border-inline-start-color: #a1402c; }
+    .course .conflict-badge { color: #8b3228; font-weight: 700; }
+    .conflicts { margin-top: 1.25rem; padding: 1rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; }
+    .conflicts li + li { margin-top: .45rem; }
     @media (max-width: 900px) {
       .calendar { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
       .day { min-height: 7rem; }
@@ -66,6 +70,11 @@
     <p id="move-help" hidden>將課程拖到想改期的日期和時間格（每 30 分鐘一格）。</p>
     <p id="move-status" role="status"></p>
     <div id="calendar" class="calendar"></div>
+    <section id="conflicts" class="conflicts" aria-labelledby="conflicts-heading" hidden>
+      <h2 id="conflicts-heading">本週排課衝突</h2>
+      <p id="conflict-status" role="status"></p>
+      <ul id="conflict-list"></ul>
+    </section>
   </section>
 </main>
 <script>
@@ -78,6 +87,13 @@
   const status = document.querySelector("#status");
   const moveHelp = document.querySelector("#move-help");
   const moveStatus = document.querySelector("#move-status");
+  const conflictsPanel = document.querySelector("#conflicts");
+  const conflictStatus = document.querySelector("#conflict-status");
+  const conflictList = document.querySelector("#conflict-list");
+  const conflictLabels = {
+    teacher: "教師時段重疊",
+    preferred_room: "希望教室時段重疊",
+  };
   const weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"];
   let token = null;
   let monday = currentMonday();
@@ -122,6 +138,7 @@
         const card = document.createElement("article");
         card.className = "course";
         if (isAdmin) {
+          card.dataset.scheduleId = course.id;
           card.draggable = true;
           card.addEventListener("dragstart", event => {
             if (savingMove) {
@@ -142,6 +159,37 @@
       }
       if (isAdmin) column.append(renderSlots(date));
       calendar.append(column);
+    }
+  }
+
+  async function loadConflicts(start, request) {
+    try {
+      const response = await fetch("/admin/schedules/conflicts", {
+        headers: {Authorization: "Bearer " + token},
+      });
+      if (!response.ok) throw new Error();
+      const allConflicts = await response.json();
+      if (request !== requestNumber) return;
+      const from = isoDate(start);
+      const through = isoDate(addDays(start, 6));
+      const conflicts = allConflicts.filter(({first}) => first.class_date >= from && first.class_date <= through);
+      const marked = new Set();
+      for (const {first, second, reasons} of conflicts) {
+        marked.add(String(first.id));
+        marked.add(String(second.id));
+        const describe = course => `${course.title}（${course.class_date} ${course.start_time.slice(0, 5)}–${course.end_time.slice(0, 5)}）`;
+        const labels = reasons.map(reason => conflictLabels[reason]).join("、");
+        conflictList.append(element("li", `${describe(first)}、${describe(second)}｜${labels}`));
+      }
+      for (const card of calendar.querySelectorAll("[data-schedule-id]")) {
+        if (!marked.has(card.dataset.scheduleId)) continue;
+        card.classList.add("conflicted");
+        card.append(element("p", "有衝突"));
+        card.lastElementChild.className = "conflict-badge";
+      }
+      conflictStatus.textContent = conflicts.length ? "" : "本週沒有排課衝突";
+    } catch {
+      if (request === requestNumber) conflictStatus.textContent = "無法載入衝突清單";
     }
   }
 
@@ -229,6 +277,9 @@
     logout.hidden = true;
     week.hidden = true;
     calendar.replaceChildren();
+    conflictsPanel.hidden = true;
+    conflictList.replaceChildren();
+    conflictStatus.textContent = "";
   }
 
   async function loadWeek() {
@@ -239,6 +290,9 @@
     range.textContent = isoDate(start) + " ～ " + isoDate(addDays(start, 6));
     renderWeek(start, []);
     status.textContent = "載入中…";
+    conflictsPanel.hidden = !isAdmin;
+    conflictList.replaceChildren();
+    conflictStatus.textContent = isAdmin ? "載入中…" : "";
     try {
       const response = await fetch("/schedules/week?week_start=" + isoDate(start), {
         headers: {Authorization: "Bearer " + token},
@@ -253,8 +307,12 @@
       if (request !== requestNumber) return;
       renderWeek(start, courses);
       status.textContent = courses.length ? "" : "本週沒有排課";
+      if (isAdmin) await loadConflicts(start, request);
     } catch {
-      if (request === requestNumber) status.textContent = "載入排課失敗，請再試一次。";
+      if (request === requestNumber) {
+        status.textContent = "載入排課失敗，請再試一次。";
+        if (isAdmin) conflictStatus.textContent = "無法載入衝突清單";
+      }
     }
   }
 
