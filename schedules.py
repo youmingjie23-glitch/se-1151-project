@@ -6,7 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from psycopg.errors import ForeignKeyViolation
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
-from auth import Account, CurrentUser
+from auth import Account, Admin, CurrentUser
 from db import connect
 
 router = APIRouter()
@@ -38,6 +38,15 @@ class Schedule(ScheduleCreate):
     teacher_id: int
 
 
+class AdminSchedule(Schedule):
+    teacher_username: str
+    preferred_room_code: str | None
+    preferred_room_name: str | None
+    official_course_code: str | None
+    official_course_section: str | None
+    official_course_title: str | None
+
+
 class SchedulePatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -61,6 +70,26 @@ def require_teacher(account: CurrentUser) -> Account:
     if account.role != "teacher":
         raise HTTPException(403, "需要教師權限")
     return account
+
+
+@router.get("/admin/schedules", response_model=list[AdminSchedule])
+def list_admin_schedules(admin: Admin):
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT s.id, s.title, s.teacher_id, s.class_date, s.start_time, s.end_time,
+                   s.preferred_room_id, s.official_course_id,
+                   u.username AS teacher_username,
+                   r.code AS preferred_room_code, r.name AS preferred_room_name,
+                   c.course_code AS official_course_code, c.section AS official_course_section,
+                   c.title AS official_course_title
+            FROM course_schedules AS s
+            JOIN users AS u ON u.id = s.teacher_id
+            LEFT JOIN rooms AS r ON r.id = s.preferred_room_id
+            LEFT JOIN official_courses AS c ON c.id = s.official_course_id
+            ORDER BY s.class_date, s.start_time, s.id
+            """
+        ).fetchall()
 
 
 @router.get("/schedules/mine", response_model=list[Schedule])
