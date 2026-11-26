@@ -113,8 +113,10 @@
           <label>希望教室<select name="preferred_room_id"></select></label>
           <label>官方課程（選填）<select name="official_course_id"></select></label>
           <p id="admin-add-options-status" role="status"></p>
+          <p id="admin-edit-note" role="status"></p>
           <p id="admin-add-status" role="status"></p>
           <button class="primary" type="submit" disabled>儲存排課</button>
+          <button id="admin-edit-cancel" type="button" hidden>取消編輯</button>
         </form>
       </details>
       <p id="all-schedules-status" role="status"></p>
@@ -143,6 +145,8 @@
   const adminAddSubmit = adminAddForm.querySelector('[type="submit"]');
   const adminAddStatus = document.querySelector("#admin-add-status");
   const adminAddOptionsStatus = document.querySelector("#admin-add-options-status");
+  const adminEditNote = document.querySelector("#admin-edit-note");
+  const adminEditCancel = document.querySelector("#admin-edit-cancel");
   const mine = document.querySelector("#mine");
   const mineStatus = document.querySelector("#mine-status");
   const mineList = document.querySelector("#mine-list");
@@ -162,6 +166,9 @@
   let monday = currentMonday();
   let requestNumber = 0;
   let allSchedulesRequest = 0;
+  let adminOptionsReady = false;
+  let adminSaving = false;
+  let adminEditing = null;
   let isAdmin = false;
   let editingSchedule = null;
   let teacherRooms = new Map();
@@ -337,9 +344,23 @@
     }
   }
 
-  function resetAdminAdd() {
+  function resetAdminEditor() {
     adminAdd.open = false;
     adminAddForm.reset();
+    for (const option of adminAddForm.querySelectorAll("option[data-original]")) option.remove();
+    adminEditing = null;
+    adminAdd.querySelector("summary").textContent = "新增排課";
+    adminEditCancel.hidden = true;
+    adminEditCancel.disabled = false;
+    adminEditNote.textContent = "";
+    adminAddStatus.textContent = "";
+    adminAddSubmit.disabled = adminAddForm.elements.teacher_id.options.length < 2;
+  }
+
+  function resetAdminAdd() {
+    adminOptionsReady = false;
+    adminSaving = false;
+    resetAdminEditor();
     adminAddForm.elements.teacher_id.replaceChildren(new Option("選擇教師", ""));
     adminAddForm.elements.preferred_room_id.replaceChildren(new Option("未指定", ""));
     adminAddForm.elements.official_course_id.replaceChildren(new Option("不關聯官方課程", ""));
@@ -347,6 +368,36 @@
     adminAddOptionsStatus.textContent = "";
     adminAddStatus.textContent = "";
   }
+
+  function openAdminEditor(course) {
+    if (adminSaving || !adminOptionsReady) return;
+    resetAdminEditor();
+    const missing = [];
+    for (const field of ["title", "class_date", "start_time", "end_time", "teacher_id", "preferred_room_id", "official_course_id"]) {
+      const input = adminAddForm.elements[field];
+      const value = String(course[field] ?? "");
+      if (input instanceof HTMLSelectElement && !Array.from(input.options).some(option => option.value === value)) {
+        const option = new Option("保留原值（ID " + value + "）", value);
+        option.dataset.original = "";
+        input.add(option);
+        missing.push(input.labels[0].firstChild.textContent);
+      }
+      input.value = value;
+    }
+    adminEditing = {id: course.id, original: Object.fromEntries(new FormData(adminAddForm))};
+    adminEditNote.textContent = missing.length
+      ? missing.join("、") + "的原值不在選項中，未變更時會保留。"
+      : "";
+    adminAdd.querySelector("summary").textContent = "編輯排課";
+    adminEditCancel.hidden = false;
+    adminAddSubmit.disabled = false;
+    adminAdd.open = true;
+    adminAddForm.elements.title.focus();
+  }
+
+  adminEditCancel.onclick = () => {
+    if (!adminSaving) resetAdminEditor();
+  };
 
   async function loadAdminAddOptions() {
     const session = token;
@@ -385,26 +436,48 @@
       messages.push("無法載入官方課程選項。");
     }
     adminAddOptionsStatus.textContent = messages.join(" ");
+    adminOptionsReady = true;
+    for (const button of allSchedulesList.querySelectorAll("button")) button.disabled = false;
   }
 
   adminAddForm.addEventListener("submit", async event => {
     event.preventDefault();
-    if (!isAdmin || adminAddSubmit.disabled) return;
+    if (!isAdmin || adminAddSubmit.disabled || adminSaving) return;
     const session = token;
-    const data = Object.fromEntries(new FormData(adminAddForm));
-    for (const field of ["preferred_room_id", "official_course_id"]) data[field] = data[field] || null;
+    const editing = adminEditing;
+    const data = {};
+    for (const [field, value] of new FormData(adminAddForm)) {
+      if (editing && value === editing.original[field]) continue;
+      data[field] = value || null;
+    }
+    if (editing && Object.keys(data).length === 0) {
+      adminAddStatus.textContent = "沒有變更。";
+      return;
+    }
+    adminSaving = true;
     adminAddSubmit.disabled = true;
+    adminEditCancel.disabled = true;
     adminAddStatus.textContent = "儲存中…";
     try {
-      await authenticatedRequest("/admin/schedules", session, {method: "POST", body: JSON.stringify(data)});
+      await authenticatedRequest(editing ? "/admin/schedules/" + editing.id : "/admin/schedules",
+        session, {method: editing ? "PATCH" : "POST", body: JSON.stringify(data)});
       if (token !== session) return;
-      adminAddForm.reset();
-      adminAddStatus.textContent = "已新增排課。";
+      if (editing) {
+        resetAdminEditor();
+        adminAddSubmit.disabled = true;
+      } else {
+        adminAddForm.reset();
+        adminAddStatus.textContent = "已新增排課。";
+      }
       await Promise.all([loadAllSchedules(), loadWeek()]);
     } catch (error) {
       if (token === session) adminAddStatus.textContent = error.message;
     } finally {
-      if (token === session) adminAddSubmit.disabled = false;
+      if (token === session) {
+        adminSaving = false;
+        adminEditCancel.disabled = false;
+        adminAddSubmit.disabled = !adminEditing && adminAddForm.elements.teacher_id.options.length < 2;
+      }
     }
   });
 
@@ -423,6 +496,11 @@
         const time = course.start_time.slice(0, 5) + "–" + course.end_time.slice(0, 5);
         item.append(element("strong", course.title), element("div",
           `${course.teacher_username}｜${course.class_date} ${time}｜希望教室：${course.preferred_room_name ?? "未指定"}`));
+        const edit = element("button", "編輯");
+        edit.type = "button";
+        edit.disabled = !adminOptionsReady;
+        edit.onclick = () => openAdminEditor(course);
+        item.append(edit);
         allSchedulesList.append(item);
       }
       allSchedulesStatus.textContent = courses.length ? "" : "目前沒有排課";
