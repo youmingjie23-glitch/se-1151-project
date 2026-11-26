@@ -36,8 +36,8 @@
     #move-status { color: #8b3228; }
     .course.conflicted { border-inline-start-color: #a1402c; }
     .course .conflict-badge { color: #8b3228; font-weight: 700; }
-    .conflicts { margin-top: 1.25rem; padding: 1rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; }
-    .conflicts li + li { margin-top: .45rem; }
+    .conflicts, .all-schedules { margin-top: 1.25rem; padding: 1rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; }
+    .conflicts li + li, .all-schedules li + li { margin-top: .45rem; }
     .mine { margin: 1.25rem 0; padding: 1rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; }
     .mine form { padding: 0; }
     .mine li + li { margin-top: .75rem; }
@@ -100,6 +100,11 @@
       <p id="conflict-status" role="status"></p>
       <ul id="conflict-list"></ul>
     </section>
+    <section id="all-schedules" class="all-schedules" aria-labelledby="all-schedules-heading" hidden>
+      <h2 id="all-schedules-heading">所有排課</h2>
+      <p id="all-schedules-status" role="status"></p>
+      <ul id="all-schedules-list"></ul>
+    </section>
   </section>
 </main>
 <script>
@@ -115,6 +120,9 @@
   const conflictsPanel = document.querySelector("#conflicts");
   const conflictStatus = document.querySelector("#conflict-status");
   const conflictList = document.querySelector("#conflict-list");
+  const allSchedulesPanel = document.querySelector("#all-schedules");
+  const allSchedulesStatus = document.querySelector("#all-schedules-status");
+  const allSchedulesList = document.querySelector("#all-schedules-list");
   const mine = document.querySelector("#mine");
   const mineStatus = document.querySelector("#mine-status");
   const mineList = document.querySelector("#mine-list");
@@ -133,6 +141,7 @@
   let token = null;
   let monday = currentMonday();
   let requestNumber = 0;
+  let allSchedulesRequest = 0;
   let isAdmin = false;
   let editingSchedule = null;
   let teacherRooms = new Map();
@@ -166,7 +175,7 @@
     return node;
   }
 
-  async function teacherRequest(path, session, options = {}) {
+  async function authenticatedRequest(path, session, options = {}) {
     const response = await fetch(path, {
       ...options,
       headers: {Authorization: "Bearer " + session, "Content-Type": "application/json"},
@@ -183,7 +192,7 @@
     const session = token;
     mineStatus.textContent = "載入中…";
     try {
-      const courses = await teacherRequest("/schedules/mine", session);
+      const courses = await authenticatedRequest("/schedules/mine", session);
       if (token !== session) return;
       mineList.replaceChildren();
       for (const course of courses) {
@@ -249,7 +258,7 @@
     submit.disabled = true;
     mineStatus.textContent = "儲存中…";
     try {
-      await teacherRequest(path, session, options);
+      await authenticatedRequest(path, session, options);
       if (token !== session) return;
       if (options.method !== "DELETE" || path === "/schedules/" + editingSchedule) mineForm.hidden = true;
       await Promise.all([loadMine(), loadWeek()]);
@@ -305,6 +314,31 @@
       }
       if (isAdmin) column.append(renderSlots(date));
       calendar.append(column);
+    }
+  }
+
+  async function loadAllSchedules() {
+    if (!isAdmin) return;
+    const session = token;
+    const request = ++allSchedulesRequest;
+    allSchedulesPanel.hidden = false;
+    allSchedulesList.replaceChildren();
+    allSchedulesStatus.textContent = "載入中…";
+    try {
+      const courses = await authenticatedRequest("/admin/schedules", session);
+      if (token !== session || request !== allSchedulesRequest) return;
+      for (const course of courses) {
+        const item = document.createElement("li");
+        const time = course.start_time.slice(0, 5) + "–" + course.end_time.slice(0, 5);
+        item.append(element("strong", course.title), element("div",
+          `${course.teacher_username}｜${course.class_date} ${time}｜希望教室：${course.preferred_room_name ?? "未指定"}`));
+        allSchedulesList.append(item);
+      }
+      allSchedulesStatus.textContent = courses.length ? "" : "目前沒有排課";
+    } catch {
+      if (token === session && request === allSchedulesRequest) {
+        allSchedulesStatus.textContent = "無法載入排課清單";
+      }
     }
   }
 
@@ -400,7 +434,7 @@
       if (response.status === 401) {
         showLogin("登入已失效，請重新登入。");
       } else if (response.ok) {
-        await loadWeek();
+        await Promise.all([loadWeek(), loadAllSchedules()]);
       } else {
         moveStatus.textContent = "改期失敗，課程保留在原時段。";
       }
@@ -436,6 +470,9 @@
     conflictsPanel.hidden = true;
     conflictList.replaceChildren();
     conflictStatus.textContent = "";
+    allSchedulesPanel.hidden = true;
+    allSchedulesList.replaceChildren();
+    allSchedulesStatus.textContent = "";
   }
 
   async function loadWeek() {
@@ -497,13 +534,14 @@
       week.hidden = false;
       monday = currentMonday();
       const loadingWeek = loadWeek();
+      const loadingAllSchedules = isAdmin ? loadAllSchedules() : null;
       if (role === "teacher") {
         const session = token;
         mine.hidden = false;
         mineAdd.disabled = true;
         const [rooms, courses] = await Promise.allSettled([
-          teacherRequest("/rooms", session),
-          teacherRequest("/official-courses", session),
+          authenticatedRequest("/rooms", session),
+          authenticatedRequest("/official-courses", session),
         ]);
         if (token === session) {
           if (rooms.status === "fulfilled") {
@@ -520,7 +558,7 @@
           await loadMine();
         }
       }
-      await loadingWeek;
+      await Promise.all([loadingWeek, loadingAllSchedules]);
     } catch (error) {
       loginStatus.textContent = error instanceof TypeError ? "無法連線，請再試一次。" : error.message;
     } finally {
