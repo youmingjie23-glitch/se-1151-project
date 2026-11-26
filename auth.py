@@ -35,7 +35,7 @@ class Registration(Credentials):
 class Account(BaseModel):
     id: int
     username: str
-    role: Literal["user", "admin"]
+    role: Literal["user", "teacher", "admin"]
     status: Literal["pending", "approved", "rejected"]
     created_at: datetime
     reviewed_at: datetime | None
@@ -46,10 +46,19 @@ class Review(BaseModel):
     status: Literal["approved", "rejected"]
 
 
+class TeacherRole(BaseModel):
+    role: Literal["teacher"]
+
+
 class LoginToken(BaseModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     expires_at: datetime
+
+
+class TeacherOption(BaseModel):
+    id: int
+    username: str
 
 
 class Room(BaseModel):
@@ -190,6 +199,41 @@ def review_user(user_id: Annotated[int, Path(gt=0, le=2**63 - 1)], review: Revie
                 raise HTTPException(404, "找不到帳號")
             raise HTTPException(409, "此帳號目前無法審核")
     return row
+
+
+@router.patch("/admin/users/{user_id}/role", response_model=Account)
+def set_teacher(
+    user_id: Annotated[int, Path(gt=0, le=2**63 - 1)],
+    change: TeacherRole,
+    admin: Admin,
+):
+    with connect() as db:
+        row = db.execute(
+            """
+            UPDATE users SET role = %s
+            WHERE id = %s AND role = 'user' AND status = 'approved'
+            RETURNING id, username, role, status, created_at, reviewed_at, reviewed_by
+            """,
+            (change.role, user_id),
+        ).fetchone()
+        if row is None:
+            existing = db.execute("SELECT id FROM users WHERE id = %s", (user_id,)).fetchone()
+            if existing is None:
+                raise HTTPException(404, "找不到帳號")
+            raise HTTPException(409, "只有已核准的一般帳號可設為教師")
+    return row
+
+
+@router.get("/admin/teachers", response_model=list[TeacherOption])
+def list_teachers(admin: Admin):
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT id, username FROM users
+            WHERE role = 'teacher' AND status = 'approved'
+            ORDER BY username, id
+            """
+        ).fetchall()
 
 
 @router.get("/rooms", response_model=list[Room])

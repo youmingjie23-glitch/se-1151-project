@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>課程週日曆</title>
+  <style>
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; background: #f4f6f8; color: #172b35; font: 1rem/1.5 system-ui, sans-serif; }
+    main { max-width: 1440px; margin: auto; padding: clamp(1rem, 4vw, 3rem); }
+    header, .toolbar, nav { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
+    header, .toolbar { justify-content: space-between; }
+    h1 { margin: 0 0 .35rem; font-size: clamp(1.75rem, 4vw, 2.5rem); }
+    h2 { margin: 0; font-size: 1.1rem; }
+    button, input { font: inherit; border-radius: .5rem; padding: .55rem .8rem; }
+    input, button { border: 1px solid #8c9aa1; background: white; color: inherit; }
+    button { cursor: pointer; }
+    button:hover { background: #e9f3f2; }
+    button.primary { background: #17645b; border-color: #17645b; color: white; }
+    button.primary:hover { background: #124f48; }
+    form { background: white; border-radius: .8rem; padding: 1.25rem; max-width: 26rem; }
+    label { display: grid; gap: .35rem; margin: 1rem 0; }
+    .toolbar { margin: 1.15rem 0; }
+    #status, #login-status { color: #455c66; }
+    .calendar { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: .55rem; }
+    .day { min-height: 12rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; overflow: hidden; }
+    .day h3 { margin: 0; background: #e7f0f1; padding: .65rem; font-size: .95rem; }
+    .course { background: #eef7f4; border-inline-start: .2rem solid #24786c; border-radius: .35rem; margin: .5rem; padding: .5rem; overflow-wrap: anywhere; }
+    .course p { margin: .2rem 0 0; color: #36515c; font-size: .84rem; }
+    .course strong { display: block; }
+    .course[draggable="true"] { cursor: grab; }
+    .slots { max-height: 15rem; overflow: auto; margin: .5rem; }
+    .slot { padding: .25rem .5rem; border-top: 1px dashed #bacbd0; font-size: .84rem; color: #36515c; }
+    .slot.active { background: #d3ede7; outline: 1px solid #17645b; outline-offset: -1px; }
+    #move-status { color: #8b3228; }
+    .course.conflicted { border-inline-start-color: #a1402c; }
+    .course .conflict-badge { color: #8b3228; font-weight: 700; }
+    .conflicts, .all-schedules { margin-top: 1.25rem; padding: 1rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; }
+    .conflicts li + li, .all-schedules li + li { margin-top: .45rem; }
+    .all-schedules li button { margin: .3rem .5rem 0 0; }
+    .mine { margin: 1.25rem 0; padding: 1rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; }
+    .mine form { padding: 0; }
+    .mine li + li { margin-top: .75rem; }
+    .mine li button { margin: .3rem .5rem 0 0; }
+    select { font: inherit; padding: .55rem .8rem; }
+    @media (max-width: 900px) {
+      .calendar { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+      .day { min-height: 7rem; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>課程週日曆</h1>
+    <button id="logout" type="button" hidden>登出</button>
+  </header>
+  <form id="login">
+    <h2>登入</h2>
+    <label>帳號<input name="username" autocomplete="username" required></label>
+    <label>密碼<input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="primary">登入</button>
+    <p id="login-status" role="status"></p>
+  </form>
+  <section id="mine" class="mine" aria-labelledby="mine-heading" hidden>
+    <h2 id="mine-heading">我的排課</h2>
+    <p id="mine-status" role="status"></p>
+    <p id="room-status" role="status"></p>
+    <p id="official-course-status" role="status"></p>
+    <ul id="mine-list"></ul>
+    <button id="mine-add" type="button" class="primary">新增排課</button>
+    <form id="mine-form" hidden>
+      <h3 id="mine-form-heading"></h3>
+      <label>課名<input name="title" required></label>
+      <label>日期<input name="class_date" type="date" required></label>
+      <label>開始時間<input name="start_time" required placeholder="09:00"></label>
+      <label>結束時間<input name="end_time" required placeholder="10:00"></label>
+      <label>希望教室<select name="preferred_room_id"></select></label>
+      <label>官方課程（選填）<select name="official_course_id" aria-describedby="official-course-note"></select></label>
+      <p id="official-course-note" role="status"></p>
+      <button class="primary" type="submit">儲存</button>
+      <button id="mine-cancel" type="button">取消</button>
+    </form>
+  </section>
+  <section id="week" aria-label="排課週日曆" hidden>
+    <div class="toolbar">
+      <h2 id="range"></h2>
+      <nav aria-label="切換週次">
+        <button id="prev" type="button">上一週</button>
+        <button id="today" type="button">本週</button>
+        <button id="next" type="button">下一週</button>
+      </nav>
+    </div>
+    <p id="status" role="status"></p>
+    <p id="move-help" hidden>將課程拖到想改期的日期和時間格（每 30 分鐘一格）。</p>
+    <p id="move-status" role="status"></p>
+    <div id="calendar" class="calendar"></div>
+    <section id="conflicts" class="conflicts" aria-labelledby="conflicts-heading" hidden>
+      <h2 id="conflicts-heading">本週排課衝突</h2>
+      <p id="conflict-status" role="status"></p>
+      <ul id="conflict-list"></ul>
+    </section>
+    <section id="all-schedules" class="all-schedules" aria-labelledby="all-schedules-heading" hidden>
+      <h2 id="all-schedules-heading">所有排課</h2>
+      <details id="admin-add">
+        <summary>新增排課</summary>
+        <form id="admin-add-form">
+          <label>課名<input name="title" required></label>
+          <label>日期<input name="class_date" type="date" required></label>
+          <label>開始時間<input name="start_time" required placeholder="09:00"></label>
+          <label>結束時間<input name="end_time" required placeholder="10:00"></label>
+          <label>授課教師<select name="teacher_id" required></select></label>
+          <label>希望教室<select name="preferred_room_id"></select></label>
+          <label>官方課程（選填）<select name="official_course_id"></select></label>
+          <p id="admin-add-options-status" role="status"></p>
+          <p id="admin-edit-note" role="status"></p>
+          <p id="admin-add-status" role="status"></p>
+          <button class="primary" type="submit" disabled>儲存排課</button>
+          <button id="admin-edit-cancel" type="button" hidden>取消編輯</button>
+        </form>
+      </details>
+      <p id="all-schedules-status" role="status"></p>
+      <p id="admin-delete-status" role="status"></p>
+      <ul id="all-schedules-list"></ul>
+    </section>
+  </section>
+</main>
+<script>
+  const login = document.querySelector("#login");
+  const loginStatus = document.querySelector("#login-status");
+  const logout = document.querySelector("#logout");
+  const week = document.querySelector("#week");
+  const calendar = document.querySelector("#calendar");
+  const range = document.querySelector("#range");
+  const status = document.querySelector("#status");
+  const moveHelp = document.querySelector("#move-help");
+  const moveStatus = document.querySelector("#move-status");
+  const conflictsPanel = document.querySelector("#conflicts");
+  const conflictStatus = document.querySelector("#conflict-status");
+  const conflictList = document.querySelector("#conflict-list");
+  const allSchedulesPanel = document.querySelector("#all-schedules");
+  const allSchedulesStatus = document.querySelector("#all-schedules-status");
+  const allSchedulesList = document.querySelector("#all-schedules-list");
+  const adminDeleteStatus = document.querySelector("#admin-delete-status");
+  const adminDeleting = new Set();
+  const adminAdd = document.querySelector("#admin-add");
+  const adminAddForm = document.querySelector("#admin-add-form");
+  const adminAddSubmit = adminAddForm.querySelector('[type="submit"]');
+  const adminAddStatus = document.querySelector("#admin-add-status");
+  const adminAddOptionsStatus = document.querySelector("#admin-add-options-status");
+  const adminEditNote = document.querySelector("#admin-edit-note");
+  const adminEditCancel = document.querySelector("#admin-edit-cancel");
+  const mine = document.querySelector("#mine");
+  const mineStatus = document.querySelector("#mine-status");
+  const mineList = document.querySelector("#mine-list");
+  const mineForm = document.querySelector("#mine-form");
+  const mineAdd = document.querySelector("#mine-add");
+  const roomStatus = document.querySelector("#room-status");
+  const roomSelect = mineForm.elements.preferred_room_id;
+  const officialCourseSelect = mineForm.elements.official_course_id;
+  const officialCourseStatus = document.querySelector("#official-course-status");
+  const officialCourseNote = document.querySelector("#official-course-note");
+  const conflictLabels = {
+    teacher: "教師時段重疊",
+    preferred_room: "希望教室時段重疊",
+  };
+  const weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"];
+  let token = null;
+  let monday = currentMonday();
+  let requestNumber = 0;
+  let allSchedulesRequest = 0;
+  let adminOptionsReady = false;
+  let adminSaving = false;
+  let adminEditing = null;
+  let isAdmin = false;
+  let editingSchedule = null;
+  let teacherRooms = new Map();
+  let officialCourses = [];
+  let savingMine = false;
+  let draggedCourse = null;
+  let savingMove = false;
+
+  function currentMonday() {
+    const parts = new Intl.DateTimeFormat("en", {
+      timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(new Date());
+    const {year, month, day} = Object.fromEntries(parts.map(({type, value}) => [type, value]));
+    const today = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+    return addDays(today, -((today.getUTCDay() + 6) % 7));
+  }
+
+  function addDays(date, days) {
+    const result = new Date(date);
+    result.setUTCDate(result.getUTCDate() + days);
+    return result;
+  }
+
+  function isoDate(date) {
+    return date.toISOString().slice(0, 10);
+  }
+
+  function element(tag, text) {
+    const node = document.createElement(tag);
+    node.textContent = text;
+    return node;
+  }
+
+  async function authenticatedRequest(path, session, options = {}) {
+    const response = await fetch(path, {
+      ...options,
+      headers: {Authorization: "Bearer " + session, "Content-Type": "application/json"},
+    });
+    if (response.status === 401 && token === session) showLogin("登入已失效，請重新登入。");
+    if (!response.ok) {
+      const {detail} = await response.json().catch(() => ({}));
+      throw new Error(typeof detail === "string" ? detail : detail?.[0]?.msg || "操作失敗，請再試一次。");
+    }
+    return response.status === 204 ? null : response.json();
+  }
+
+  async function loadMine() {
+    const session = token;
+    mineStatus.textContent = "載入中…";
+    try {
+      const courses = await authenticatedRequest("/schedules/mine", session);
+      if (token !== session) return;
+      mineList.replaceChildren();
+      for (const course of courses) {
+        const item = document.createElement("li");
+        const time = course.start_time.slice(0, 5) + "–" + course.end_time.slice(0, 5);
+        const room = course.preferred_room_id === null ? "未指定" :
+          teacherRooms.get(course.preferred_room_id) ?? "教室 ID " + course.preferred_room_id;
+        item.append(element("strong", course.title),
+          element("div", course.class_date + " " + time + "｜希望教室：" + room));
+        const edit = element("button", "編輯");
+        edit.onclick = () => openMineForm(course);
+        const remove = element("button", "刪除");
+        remove.onclick = () => {
+          if (!savingMine && window.confirm("確定刪除「" + course.title + "」？")) {
+            saveMine("/schedules/" + course.id, {method: "DELETE"});
+          }
+        };
+        item.append(edit, remove);
+        mineList.append(item);
+      }
+      mineStatus.textContent = courses.length ? "" : "你目前沒有排課";
+    } catch {
+      if (token === session) mineStatus.textContent = "無法載入我的排課，請重新登入後再試。";
+    }
+  }
+
+  function openMineForm(course = null) {
+    if (savingMine) return;
+    editingSchedule = course?.id ?? null;
+    mineForm.reset();
+    for (const field of ["title", "class_date", "start_time", "end_time"]) {
+      mineForm.elements[field].value = course?.[field] ?? "";
+    }
+    roomSelect.replaceChildren(new Option("未指定", ""));
+    for (const [id, name] of teacherRooms) roomSelect.add(new Option(name, id));
+    const roomId = course?.preferred_room_id;
+    if (roomId != null && !teacherRooms.has(roomId)) roomSelect.add(new Option("教室 ID " + roomId, roomId));
+    roomSelect.value = roomId ?? "";
+    officialCourseSelect.replaceChildren(new Option("不關聯官方課程", ""));
+    for (const {id, course_code, section, title} of officialCourses) {
+      officialCourseSelect.add(new Option(`${course_code}｜班別 ${section}｜${title}`, id));
+    }
+    const officialId = course?.official_course_id;
+    const missingOfficialOption = officialId != null && !officialCourses.some(({id}) => id === officialId);
+    if (missingOfficialOption) {
+      officialCourseSelect.add(new Option("保留原關聯（ID " + officialId + "）", officialId));
+    }
+    officialCourseSelect.value = officialId ?? "";
+    officialCourseNote.textContent = missingOfficialOption
+      ? "原關聯不在目前的選項中，儲存時會保留，除非你改選其他選項。"
+      : "";
+    document.querySelector("#mine-form-heading").textContent = course ? "編輯排課" : "新增排課";
+    mineStatus.textContent = "";
+    mineForm.hidden = false;
+    mineForm.elements.title.focus();
+  }
+
+  async function saveMine(path, options) {
+    if (savingMine) return;
+    const session = token;
+    savingMine = true;
+    const submit = mineForm.querySelector('[type="submit"]');
+    submit.disabled = true;
+    mineStatus.textContent = "儲存中…";
+    try {
+      await authenticatedRequest(path, session, options);
+      if (token !== session) return;
+      if (options.method !== "DELETE" || path === "/schedules/" + editingSchedule) mineForm.hidden = true;
+      await Promise.all([loadMine(), loadWeek()]);
+    } catch (error) {
+      if (token === session) mineStatus.textContent = error.message;
+    } finally {
+      savingMine = false;
+      submit.disabled = false;
+    }
+  }
+
+  mineAdd.onclick = () => openMineForm();
+  document.querySelector("#mine-cancel").onclick = () => {
+    if (!savingMine) mineForm.hidden = true;
+  };
+  mineForm.addEventListener("submit", event => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(mineForm));
+    for (const field of ["preferred_room_id", "official_course_id"]) data[field] = data[field] || null;
+    saveMine(editingSchedule === null ? "/schedules" : "/schedules/" + editingSchedule,
+      {method: editingSchedule === null ? "POST" : "PATCH", body: JSON.stringify(data)});
+  });
+
+  function renderWeek(start, courses) {
+    calendar.replaceChildren();
+    for (const [offset, weekday] of weekdays.entries()) {
+      const date = isoDate(addDays(start, offset));
+      const column = document.createElement("section");
+      column.className = "day";
+      column.append(element("h3", weekday + " " + date.slice(5)));
+      for (const course of courses.filter(item => item.class_date === date)) {
+        const card = document.createElement("article");
+        card.className = "course";
+        if (isAdmin) {
+          card.dataset.scheduleId = course.id;
+          card.draggable = true;
+          card.addEventListener("dragstart", event => {
+            if (savingMove) {
+              event.preventDefault();
+              return;
+            }
+            draggedCourse = course;
+            event.dataTransfer.setData("text/plain", String(course.id));
+            event.dataTransfer.effectAllowed = "move";
+          });
+          card.addEventListener("dragend", () => { draggedCourse = null; });
+        }
+        const timeRange = course.start_time.slice(0, 5) + "–" + course.end_time.slice(0, 5);
+        const room = course.preferred_room?.name ?? "未指定";
+        card.append(element("p", timeRange), element("strong", course.title),
+          element("p", "教師：" + course.teacher_username), element("p", "希望教室：" + room));
+        column.append(card);
+      }
+      if (isAdmin) column.append(renderSlots(date));
+      calendar.append(column);
+    }
+  }
+
+  function resetAdminEditor() {
+    adminAdd.open = false;
+    adminAddForm.reset();
+    for (const option of adminAddForm.querySelectorAll("option[data-original]")) option.remove();
+    adminEditing = null;
+    adminAdd.querySelector("summary").textContent = "新增排課";
+    adminEditCancel.hidden = true;
+    adminEditCancel.disabled = false;
+    adminEditNote.textContent = "";
+    adminAddStatus.textContent = "";
+    adminAddSubmit.disabled = adminAddForm.elements.teacher_id.options.length < 2;
+  }
+
+  function resetAdminAdd() {
+    adminOptionsReady = false;
+    adminSaving = false;
+    resetAdminEditor();
+    adminAddForm.elements.teacher_id.replaceChildren(new Option("選擇教師", ""));
+    adminAddForm.elements.preferred_room_id.replaceChildren(new Option("未指定", ""));
+    adminAddForm.elements.official_course_id.replaceChildren(new Option("不關聯官方課程", ""));
+    adminAddSubmit.disabled = true;
+    adminAddOptionsStatus.textContent = "";
+    adminAddStatus.textContent = "";
+  }
+
+  function openAdminEditor(course) {
+    if (adminSaving || !adminOptionsReady) return;
+    resetAdminEditor();
+    const missing = [];
+    for (const field of ["title", "class_date", "start_time", "end_time", "teacher_id", "preferred_room_id", "official_course_id"]) {
+      const input = adminAddForm.elements[field];
+      const value = String(course[field] ?? "");
+      if (input instanceof HTMLSelectElement && !Array.from(input.options).some(option => option.value === value)) {
+        const option = new Option("保留原值（ID " + value + "）", value);
+        option.dataset.original = "";
+        input.add(option);
+        missing.push(input.labels[0].firstChild.textContent);
+      }
+      input.value = value;
+    }
+    adminEditing = {id: course.id, original: Object.fromEntries(new FormData(adminAddForm))};
+    adminEditNote.textContent = missing.length
+      ? missing.join("、") + "的原值不在選項中，未變更時會保留。"
+      : "";
+    adminAdd.querySelector("summary").textContent = "編輯排課";
+    adminEditCancel.hidden = false;
+    adminAddSubmit.disabled = false;
+    adminAdd.open = true;
+    adminAddForm.elements.title.focus();
+  }
+
+  adminEditCancel.onclick = () => {
+    if (!adminSaving) resetAdminEditor();
+  };
+
+  async function loadAdminAddOptions() {
+    const session = token;
+    resetAdminAdd();
+    adminAddOptionsStatus.textContent = "載入選項中…";
+    const [teachers, rooms, courses] = await Promise.allSettled([
+      authenticatedRequest("/admin/teachers", session),
+      authenticatedRequest("/rooms", session),
+      authenticatedRequest("/official-courses", session),
+    ]);
+    if (token !== session) return;
+
+    const messages = [];
+    if (teachers.status === "rejected") {
+      messages.push("無法載入教師清單。");
+    } else if (!teachers.value.length) {
+      messages.push("目前沒有可指派的教師。");
+    } else {
+      for (const {id, username} of teachers.value) {
+        adminAddForm.elements.teacher_id.add(new Option(username, id));
+      }
+      adminAddSubmit.disabled = false;
+    }
+    if (rooms.status === "fulfilled") {
+      for (const {id, name} of rooms.value) {
+        adminAddForm.elements.preferred_room_id.add(new Option(name, id));
+      }
+    } else {
+      messages.push("無法載入教室選項。");
+    }
+    if (courses.status === "fulfilled") {
+      for (const {id, course_code, section, title} of courses.value) {
+        adminAddForm.elements.official_course_id.add(new Option(`${course_code}｜班別 ${section}｜${title}`, id));
+      }
+    } else {
+      messages.push("無法載入官方課程選項。");
+    }
+    adminAddOptionsStatus.textContent = messages.join(" ");
+    adminOptionsReady = true;
+    for (const button of allSchedulesList.querySelectorAll(".admin-edit-button")) button.disabled = false;
+  }
+
+  adminAddForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!isAdmin || adminAddSubmit.disabled || adminSaving) return;
+    const session = token;
+    const editing = adminEditing;
+    const data = {};
+    for (const [field, value] of new FormData(adminAddForm)) {
+      if (editing && value === editing.original[field]) continue;
+      data[field] = value || null;
+    }
+    if (editing && Object.keys(data).length === 0) {
+      adminAddStatus.textContent = "沒有變更。";
+      return;
+    }
+    adminSaving = true;
+    adminAddSubmit.disabled = true;
+    adminEditCancel.disabled = true;
+    adminAddStatus.textContent = "儲存中…";
+    try {
+      await authenticatedRequest(editing ? "/admin/schedules/" + editing.id : "/admin/schedules",
+        session, {method: editing ? "PATCH" : "POST", body: JSON.stringify(data)});
+      if (token !== session) return;
+      if (editing) {
+        resetAdminEditor();
+        adminAddSubmit.disabled = true;
+      } else {
+        adminAddForm.reset();
+        adminAddStatus.textContent = "已新增排課。";
+      }
+      await Promise.all([loadAllSchedules(), loadWeek()]);
+    } catch (error) {
+      if (token === session) adminAddStatus.textContent = error.message;
+    } finally {
+      if (token === session) {
+        adminSaving = false;
+        adminEditCancel.disabled = false;
+        adminAddSubmit.disabled = !adminEditing && adminAddForm.elements.teacher_id.options.length < 2;
+      }
+    }
+  });
+
+  async function deleteAdminSchedule(course, button, time) {
+    if (!isAdmin || adminDeleting.has(course.id)) return;
+    if (!window.confirm(`確定刪除「${course.title}」？\n教師：${course.teacher_username}\n日期時段：${course.class_date} ${time}`)) return;
+
+    const session = token;
+    adminDeleting.add(course.id);
+    button.disabled = true;
+    adminDeleteStatus.textContent = "";
+    try {
+      await authenticatedRequest("/admin/schedules/" + course.id, session, {method: "DELETE"});
+      if (token !== session) return;
+      if (adminEditing?.id === course.id && !adminSaving) resetAdminEditor();
+      await Promise.all([loadAllSchedules(), loadWeek()]);
+    } catch (error) {
+      if (token === session) adminDeleteStatus.textContent = "刪除失敗：" + error.message;
+    } finally {
+      if (token === session) {
+        adminDeleting.delete(course.id);
+        button.disabled = false;
+        const currentButton = allSchedulesList.querySelector(`[data-delete-id="${course.id}"]`);
+        if (currentButton) currentButton.disabled = false;
+      }
+    }
+  }
+
+  async function loadAllSchedules() {
+    if (!isAdmin) return;
+    const session = token;
+    const request = ++allSchedulesRequest;
+    allSchedulesPanel.hidden = false;
+    allSchedulesList.replaceChildren();
+    allSchedulesStatus.textContent = "載入中…";
+    try {
+      const courses = await authenticatedRequest("/admin/schedules", session);
+      if (token !== session || request !== allSchedulesRequest) return;
+      for (const course of courses) {
+        const item = document.createElement("li");
+        const time = course.start_time.slice(0, 5) + "–" + course.end_time.slice(0, 5);
+        item.append(element("strong", course.title), element("div",
+          `${course.teacher_username}｜${course.class_date} ${time}｜希望教室：${course.preferred_room_name ?? "未指定"}`));
+        const edit = element("button", "編輯");
+        edit.type = "button";
+        edit.className = "admin-edit-button";
+        edit.disabled = !adminOptionsReady;
+        edit.onclick = () => openAdminEditor(course);
+        const remove = element("button", "刪除");
+        remove.type = "button";
+        remove.dataset.deleteId = course.id;
+        remove.disabled = adminDeleting.has(course.id);
+        remove.onclick = () => deleteAdminSchedule(course, remove, time);
+        item.append(edit, remove);
+        allSchedulesList.append(item);
+      }
+      allSchedulesStatus.textContent = courses.length ? "" : "目前沒有排課";
+    } catch {
+      if (token === session && request === allSchedulesRequest) {
+        allSchedulesStatus.textContent = "無法載入排課清單";
+      }
+    }
+  }
+
+  async function loadConflicts(start, request) {
+    try {
+      const response = await fetch("/admin/schedules/conflicts", {
+        headers: {Authorization: "Bearer " + token},
+      });
+      if (!response.ok) throw new Error();
+      const allConflicts = await response.json();
+      if (request !== requestNumber) return;
+      const from = isoDate(start);
+      const through = isoDate(addDays(start, 6));
+      const conflicts = allConflicts.filter(({first}) => first.class_date >= from && first.class_date <= through);
+      const marked = new Set();
+      for (const {first, second, reasons} of conflicts) {
+        marked.add(String(first.id));
+        marked.add(String(second.id));
+        const describe = course => `${course.title}（${course.class_date} ${course.start_time.slice(0, 5)}–${course.end_time.slice(0, 5)}）`;
+        const labels = reasons.map(reason => conflictLabels[reason]).join("、");
+        conflictList.append(element("li", `${describe(first)}、${describe(second)}｜${labels}`));
+      }
+      for (const card of calendar.querySelectorAll("[data-schedule-id]")) {
+        if (!marked.has(card.dataset.scheduleId)) continue;
+        card.classList.add("conflicted");
+        card.append(element("p", "有衝突"));
+        card.lastElementChild.className = "conflict-badge";
+      }
+      conflictStatus.textContent = conflicts.length ? "" : "本週沒有排課衝突";
+    } catch {
+      if (request === requestNumber) conflictStatus.textContent = "無法載入衝突清單";
+    }
+  }
+
+  function renderSlots(date) {
+    const slots = document.createElement("div");
+    slots.className = "slots";
+    for (let minute = 0; minute < 24 * 60; minute += 30) {
+      const start = formatTime(minute * 60_000_000);
+      const slot = element("div", start.slice(0, 5));
+      slot.className = "slot";
+      slot.addEventListener("dragover", event => {
+        if (!draggedCourse || savingMove) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        slot.classList.add("active");
+      });
+      slot.addEventListener("dragleave", () => slot.classList.remove("active"));
+      slot.addEventListener("drop", event => {
+        slot.classList.remove("active");
+        if (!draggedCourse || savingMove) return;
+        event.preventDefault();
+        const course = draggedCourse;
+        draggedCourse = null;
+        saveMove(course, date, start);
+      });
+      slots.append(slot);
+    }
+    return slots;
+  }
+
+  function timeInMicroseconds(value) {
+    const [hours, minutes, seconds = "0"] = value.split(":");
+    return (Number(hours) * 3600 + Number(minutes) * 60) * 1_000_000
+      + Math.round(Number(seconds) * 1_000_000);
+  }
+
+  function formatTime(microseconds) {
+    const seconds = Math.floor(microseconds / 1_000_000);
+    const parts = [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, seconds % 60];
+    const fraction = microseconds % 1_000_000;
+    return parts.map(part => String(part).padStart(2, "0")).join(":")
+      + (fraction ? "." + String(fraction).padStart(6, "0") : "");
+  }
+
+  async function saveMove(course, date, start) {
+    moveStatus.textContent = "";
+    const duration = timeInMicroseconds(course.end_time) - timeInMicroseconds(course.start_time);
+    const end = timeInMicroseconds(start) + duration;
+    if (end >= 24 * 3600 * 1_000_000) {
+      moveStatus.textContent = "改期失敗：結束時間必須在同一天。";
+      return;
+    }
+    const currentToken = token;
+    savingMove = true;
+    try {
+      const response = await fetch("/admin/schedules/" + course.id, {
+        method: "PATCH",
+        headers: {Authorization: "Bearer " + currentToken, "Content-Type": "application/json"},
+        body: JSON.stringify({class_date: date, start_time: start, end_time: formatTime(end)}),
+      });
+      if (token !== currentToken) return;
+      if (response.status === 401) {
+        showLogin("登入已失效，請重新登入。");
+      } else if (response.ok) {
+        await Promise.all([loadWeek(), loadAllSchedules()]);
+      } else {
+        moveStatus.textContent = "改期失敗，課程保留在原時段。";
+      }
+    } catch {
+      if (token === currentToken) moveStatus.textContent = "改期失敗，請確認連線後重試。";
+    } finally {
+      savingMove = false;
+    }
+  }
+
+  function showLogin(message = "") {
+    token = null;
+    isAdmin = false;
+    teacherRooms.clear();
+    officialCourses = [];
+    mine.hidden = true;
+    mineForm.hidden = true;
+    mineForm.reset();
+    mineList.replaceChildren();
+    mineStatus.textContent = "";
+    roomStatus.textContent = "";
+    officialCourseStatus.textContent = "";
+    officialCourseNote.textContent = "";
+    draggedCourse = null;
+    moveHelp.hidden = true;
+    moveStatus.textContent = "";
+    requestNumber++;
+    login.hidden = false;
+    loginStatus.textContent = message;
+    logout.hidden = true;
+    week.hidden = true;
+    calendar.replaceChildren();
+    conflictsPanel.hidden = true;
+    conflictList.replaceChildren();
+    conflictStatus.textContent = "";
+    allSchedulesPanel.hidden = true;
+    allSchedulesList.replaceChildren();
+    allSchedulesStatus.textContent = "";
+    adminDeleting.clear();
+    adminDeleteStatus.textContent = "";
+    resetAdminAdd();
+  }
+
+  async function loadWeek() {
+    const request = ++requestNumber;
+    const start = monday;
+    draggedCourse = null;
+    moveStatus.textContent = "";
+    range.textContent = isoDate(start) + " ～ " + isoDate(addDays(start, 6));
+    renderWeek(start, []);
+    status.textContent = "載入中…";
+    conflictsPanel.hidden = !isAdmin;
+    conflictList.replaceChildren();
+    conflictStatus.textContent = isAdmin ? "載入中…" : "";
+    try {
+      const response = await fetch("/schedules/week?week_start=" + isoDate(start), {
+        headers: {Authorization: "Bearer " + token},
+      });
+      if (request !== requestNumber) return;
+      if (response.status === 401) {
+        showLogin("登入已失效，請重新登入。");
+        return;
+      }
+      if (!response.ok) throw new Error("載入排課失敗，請再試一次。");
+      const courses = await response.json();
+      if (request !== requestNumber) return;
+      renderWeek(start, courses);
+      status.textContent = courses.length ? "" : "本週沒有排課";
+      if (isAdmin) await loadConflicts(start, request);
+    } catch {
+      if (request === requestNumber) {
+        status.textContent = "載入排課失敗，請再試一次。";
+        if (isAdmin) conflictStatus.textContent = "無法載入衝突清單";
+      }
+    }
+  }
+
+  login.addEventListener("submit", async event => {
+    event.preventDefault();
+    const button = login.querySelector("button");
+    button.disabled = true;
+    loginStatus.textContent = "";
+    try {
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(Object.fromEntries(new FormData(login))),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "登入失敗，請確認帳號與密碼。");
+      const profile = await fetch("/auth/me", {headers: {Authorization: "Bearer " + result.access_token}});
+      if (!profile.ok) throw new Error("無法取得帳號資料，請重新登入。");
+      const {role} = await profile.json();
+      isAdmin = role === "admin";
+      moveHelp.hidden = !isAdmin;
+      token = result.access_token;
+      login.reset();
+      login.hidden = true;
+      logout.hidden = false;
+      week.hidden = false;
+      monday = currentMonday();
+      const loadingWeek = loadWeek();
+      const loadingAdmin = isAdmin ? Promise.all([loadAllSchedules(), loadAdminAddOptions()]) : null;
+      if (role === "teacher") {
+        const session = token;
+        mine.hidden = false;
+        mineAdd.disabled = true;
+        const [rooms, courses] = await Promise.allSettled([
+          authenticatedRequest("/rooms", session),
+          authenticatedRequest("/official-courses", session),
+        ]);
+        if (token === session) {
+          if (rooms.status === "fulfilled") {
+            teacherRooms = new Map(rooms.value.map(room => [room.id, room.name]));
+          } else {
+            roomStatus.textContent = "無法載入教室選項。";
+          }
+          if (courses.status === "fulfilled") {
+            officialCourses = courses.value;
+          } else {
+            officialCourseStatus.textContent = "無法載入官方課程選項，編輯時仍可保留原關聯。";
+          }
+          mineAdd.disabled = false;
+          await loadMine();
+        }
+      }
+      await Promise.all([loadingWeek, loadingAdmin]);
+    } catch (error) {
+      loginStatus.textContent = error instanceof TypeError ? "無法連線，請再試一次。" : error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  logout.addEventListener("click", async () => {
+    const currentToken = token;
+    showLogin();
+    try {
+      const response = await fetch("/auth/logout", {
+        method: "POST", headers: {Authorization: "Bearer " + currentToken},
+      });
+      if (!response.ok && response.status !== 401) throw new Error();
+    } catch {
+      if (!token) loginStatus.textContent = "無法確認伺服器已登出。";
+    }
+  });
+
+  document.querySelector("#prev").onclick = () => { monday = addDays(monday, -7); loadWeek(); };
+  document.querySelector("#today").onclick = () => { monday = currentMonday(); loadWeek(); };
+  document.querySelector("#next").onclick = () => { monday = addDays(monday, 7); loadWeek(); };
+</script>
+</body>
+</html>
