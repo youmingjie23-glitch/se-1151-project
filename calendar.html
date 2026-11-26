@@ -38,6 +38,7 @@
     .course .conflict-badge { color: #8b3228; font-weight: 700; }
     .conflicts, .all-schedules { margin-top: 1.25rem; padding: 1rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; }
     .conflicts li + li, .all-schedules li + li { margin-top: .45rem; }
+    .all-schedules li button { margin: .3rem .5rem 0 0; }
     .mine { margin: 1.25rem 0; padding: 1rem; background: white; border: 1px solid #d9e2e6; border-radius: .7rem; }
     .mine form { padding: 0; }
     .mine li + li { margin-top: .75rem; }
@@ -120,6 +121,7 @@
         </form>
       </details>
       <p id="all-schedules-status" role="status"></p>
+      <p id="admin-delete-status" role="status"></p>
       <ul id="all-schedules-list"></ul>
     </section>
   </section>
@@ -140,6 +142,8 @@
   const allSchedulesPanel = document.querySelector("#all-schedules");
   const allSchedulesStatus = document.querySelector("#all-schedules-status");
   const allSchedulesList = document.querySelector("#all-schedules-list");
+  const adminDeleteStatus = document.querySelector("#admin-delete-status");
+  const adminDeleting = new Set();
   const adminAdd = document.querySelector("#admin-add");
   const adminAddForm = document.querySelector("#admin-add-form");
   const adminAddSubmit = adminAddForm.querySelector('[type="submit"]');
@@ -437,7 +441,7 @@
     }
     adminAddOptionsStatus.textContent = messages.join(" ");
     adminOptionsReady = true;
-    for (const button of allSchedulesList.querySelectorAll("button")) button.disabled = false;
+    for (const button of allSchedulesList.querySelectorAll(".admin-edit-button")) button.disabled = false;
   }
 
   adminAddForm.addEventListener("submit", async event => {
@@ -481,6 +485,31 @@
     }
   });
 
+  async function deleteAdminSchedule(course, button, time) {
+    if (!isAdmin || adminDeleting.has(course.id)) return;
+    if (!window.confirm(`確定刪除「${course.title}」？\n教師：${course.teacher_username}\n日期時段：${course.class_date} ${time}`)) return;
+
+    const session = token;
+    adminDeleting.add(course.id);
+    button.disabled = true;
+    adminDeleteStatus.textContent = "";
+    try {
+      await authenticatedRequest("/admin/schedules/" + course.id, session, {method: "DELETE"});
+      if (token !== session) return;
+      if (adminEditing?.id === course.id && !adminSaving) resetAdminEditor();
+      await Promise.all([loadAllSchedules(), loadWeek()]);
+    } catch (error) {
+      if (token === session) adminDeleteStatus.textContent = "刪除失敗：" + error.message;
+    } finally {
+      if (token === session) {
+        adminDeleting.delete(course.id);
+        button.disabled = false;
+        const currentButton = allSchedulesList.querySelector(`[data-delete-id="${course.id}"]`);
+        if (currentButton) currentButton.disabled = false;
+      }
+    }
+  }
+
   async function loadAllSchedules() {
     if (!isAdmin) return;
     const session = token;
@@ -498,9 +527,15 @@
           `${course.teacher_username}｜${course.class_date} ${time}｜希望教室：${course.preferred_room_name ?? "未指定"}`));
         const edit = element("button", "編輯");
         edit.type = "button";
+        edit.className = "admin-edit-button";
         edit.disabled = !adminOptionsReady;
         edit.onclick = () => openAdminEditor(course);
-        item.append(edit);
+        const remove = element("button", "刪除");
+        remove.type = "button";
+        remove.dataset.deleteId = course.id;
+        remove.disabled = adminDeleting.has(course.id);
+        remove.onclick = () => deleteAdminSchedule(course, remove, time);
+        item.append(edit, remove);
         allSchedulesList.append(item);
       }
       allSchedulesStatus.textContent = courses.length ? "" : "目前沒有排課";
@@ -642,6 +677,8 @@
     allSchedulesPanel.hidden = true;
     allSchedulesList.replaceChildren();
     allSchedulesStatus.textContent = "";
+    adminDeleting.clear();
+    adminDeleteStatus.textContent = "";
     resetAdminAdd();
   }
 
