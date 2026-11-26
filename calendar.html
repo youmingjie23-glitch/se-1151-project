@@ -102,6 +102,21 @@
     </section>
     <section id="all-schedules" class="all-schedules" aria-labelledby="all-schedules-heading" hidden>
       <h2 id="all-schedules-heading">所有排課</h2>
+      <details id="admin-add">
+        <summary>新增排課</summary>
+        <form id="admin-add-form">
+          <label>課名<input name="title" required></label>
+          <label>日期<input name="class_date" type="date" required></label>
+          <label>開始時間<input name="start_time" required placeholder="09:00"></label>
+          <label>結束時間<input name="end_time" required placeholder="10:00"></label>
+          <label>授課教師<select name="teacher_id" required></select></label>
+          <label>希望教室<select name="preferred_room_id"></select></label>
+          <label>官方課程（選填）<select name="official_course_id"></select></label>
+          <p id="admin-add-options-status" role="status"></p>
+          <p id="admin-add-status" role="status"></p>
+          <button class="primary" type="submit" disabled>儲存排課</button>
+        </form>
+      </details>
       <p id="all-schedules-status" role="status"></p>
       <ul id="all-schedules-list"></ul>
     </section>
@@ -123,6 +138,11 @@
   const allSchedulesPanel = document.querySelector("#all-schedules");
   const allSchedulesStatus = document.querySelector("#all-schedules-status");
   const allSchedulesList = document.querySelector("#all-schedules-list");
+  const adminAdd = document.querySelector("#admin-add");
+  const adminAddForm = document.querySelector("#admin-add-form");
+  const adminAddSubmit = adminAddForm.querySelector('[type="submit"]');
+  const adminAddStatus = document.querySelector("#admin-add-status");
+  const adminAddOptionsStatus = document.querySelector("#admin-add-options-status");
   const mine = document.querySelector("#mine");
   const mineStatus = document.querySelector("#mine-status");
   const mineList = document.querySelector("#mine-list");
@@ -317,6 +337,77 @@
     }
   }
 
+  function resetAdminAdd() {
+    adminAdd.open = false;
+    adminAddForm.reset();
+    adminAddForm.elements.teacher_id.replaceChildren(new Option("選擇教師", ""));
+    adminAddForm.elements.preferred_room_id.replaceChildren(new Option("未指定", ""));
+    adminAddForm.elements.official_course_id.replaceChildren(new Option("不關聯官方課程", ""));
+    adminAddSubmit.disabled = true;
+    adminAddOptionsStatus.textContent = "";
+    adminAddStatus.textContent = "";
+  }
+
+  async function loadAdminAddOptions() {
+    const session = token;
+    resetAdminAdd();
+    adminAddOptionsStatus.textContent = "載入選項中…";
+    const [teachers, rooms, courses] = await Promise.allSettled([
+      authenticatedRequest("/admin/teachers", session),
+      authenticatedRequest("/rooms", session),
+      authenticatedRequest("/official-courses", session),
+    ]);
+    if (token !== session) return;
+
+    const messages = [];
+    if (teachers.status === "rejected") {
+      messages.push("無法載入教師清單。");
+    } else if (!teachers.value.length) {
+      messages.push("目前沒有可指派的教師。");
+    } else {
+      for (const {id, username} of teachers.value) {
+        adminAddForm.elements.teacher_id.add(new Option(username, id));
+      }
+      adminAddSubmit.disabled = false;
+    }
+    if (rooms.status === "fulfilled") {
+      for (const {id, name} of rooms.value) {
+        adminAddForm.elements.preferred_room_id.add(new Option(name, id));
+      }
+    } else {
+      messages.push("無法載入教室選項。");
+    }
+    if (courses.status === "fulfilled") {
+      for (const {id, course_code, section, title} of courses.value) {
+        adminAddForm.elements.official_course_id.add(new Option(`${course_code}｜班別 ${section}｜${title}`, id));
+      }
+    } else {
+      messages.push("無法載入官方課程選項。");
+    }
+    adminAddOptionsStatus.textContent = messages.join(" ");
+  }
+
+  adminAddForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!isAdmin || adminAddSubmit.disabled) return;
+    const session = token;
+    const data = Object.fromEntries(new FormData(adminAddForm));
+    for (const field of ["preferred_room_id", "official_course_id"]) data[field] = data[field] || null;
+    adminAddSubmit.disabled = true;
+    adminAddStatus.textContent = "儲存中…";
+    try {
+      await authenticatedRequest("/admin/schedules", session, {method: "POST", body: JSON.stringify(data)});
+      if (token !== session) return;
+      adminAddForm.reset();
+      adminAddStatus.textContent = "已新增排課。";
+      await Promise.all([loadAllSchedules(), loadWeek()]);
+    } catch (error) {
+      if (token === session) adminAddStatus.textContent = error.message;
+    } finally {
+      if (token === session) adminAddSubmit.disabled = false;
+    }
+  });
+
   async function loadAllSchedules() {
     if (!isAdmin) return;
     const session = token;
@@ -473,6 +564,7 @@
     allSchedulesPanel.hidden = true;
     allSchedulesList.replaceChildren();
     allSchedulesStatus.textContent = "";
+    resetAdminAdd();
   }
 
   async function loadWeek() {
@@ -534,7 +626,7 @@
       week.hidden = false;
       monday = currentMonday();
       const loadingWeek = loadWeek();
-      const loadingAllSchedules = isAdmin ? loadAllSchedules() : null;
+      const loadingAdmin = isAdmin ? Promise.all([loadAllSchedules(), loadAdminAddOptions()]) : null;
       if (role === "teacher") {
         const session = token;
         mine.hidden = false;
@@ -558,7 +650,7 @@
           await loadMine();
         }
       }
-      await Promise.all([loadingWeek, loadingAllSchedules]);
+      await Promise.all([loadingWeek, loadingAdmin]);
     } catch (error) {
       loginStatus.textContent = error instanceof TypeError ? "無法連線，請再試一次。" : error.message;
     } finally {

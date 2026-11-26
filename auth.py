@@ -56,6 +56,11 @@ class LoginToken(BaseModel):
     expires_at: datetime
 
 
+class TeacherOption(BaseModel):
+    id: int
+    username: str
+
+
 class Room(BaseModel):
     id: int
     code: str
@@ -217,6 +222,18 @@ def set_teacher(
                 raise HTTPException(404, "找不到帳號")
             raise HTTPException(409, "只有已核准的一般帳號可設為教師")
     return row
+
+
+@router.get("/admin/teachers", response_model=list[TeacherOption])
+def list_teachers(admin: Admin):
+    with connect() as db:
+        return db.execute(
+            """
+            SELECT id, username FROM users
+            WHERE role = 'teacher' AND status = 'approved'
+            ORDER BY username, id
+            """
+        ).fetchall()
 
 
 @router.get("/rooms", response_model=list[Room])
